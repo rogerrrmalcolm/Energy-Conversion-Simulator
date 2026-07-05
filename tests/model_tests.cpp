@@ -1,0 +1,60 @@
+#include "bh/algebraic_model.hpp"
+#include "bh/constants.hpp"
+#include "bh/kerr_geodesic.hpp"
+#include "bh/plasma_model.hpp"
+#include "bh/schwarzschild_geodesic.hpp"
+
+#include <cmath>
+#include <iostream>
+#include <stdexcept>
+
+namespace {
+int failures = 0;
+
+void check(bool condition, const char* message) {
+    if (!condition) { std::cerr << "FAIL: " << message << '\n'; ++failures; }
+}
+
+void near(double actual, double expected, double tolerance, const char* message) {
+    check(std::abs(actual-expected) <= tolerance, message);
+}
+}
+
+int main() {
+    const auto nonrotating = bh::rotational_energy(bh::solar_mass_kg, 0.0);
+    near(nonrotating.rotational_energy_joules, 0.0, 1.0, "Schwarzschild has no rotational reservoir");
+
+    const auto near_extremal = bh::rotational_energy(1.0, 0.999999999);
+    near(near_extremal.rotational_fraction, 1.0-1.0/std::sqrt(2.0), 3.0e-5,
+         "near-extremal reservoir approaches 29.29 percent");
+
+    bool rejected = false;
+    try { (void)bh::rotational_energy(1.0, 1.0); } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "extremal spin is rejected by sub-extremal model");
+
+    const double r = 10.0;
+    const double circular_l = std::sqrt(r*r/(r-3.0));
+    const auto circular = bh::integrate_schwarzschild(
+        {1.0, 0.956182887, circular_l}, {0.0, r, 0.0, 0.0, 0.0},
+        1e-3, 1000, 20.0);
+    near(circular.points.back().radius, r, 1e-10, "Schwarzschild circular orbit remains circular");
+
+    near(bh::kerr_outer_horizon(1.0, 0.0), 2.0, 1e-14,
+         "Kerr horizon reduces to Schwarzschild horizon");
+    const bh::KerrOrbit outward{1.0, 0.5, 1.0, 0.0, 1.0, 1};
+    check(bh::kerr_radial_potential(outward, 10.0) >= 0.0, "Kerr test orbit is admissible");
+    const auto escaping = bh::integrate_kerr(outward, 10.0, 0.01, 10'000, 11.0);
+    check(escaping.termination == bh::TrajectoryTermination::reached_escape_radius,
+          "outward Kerr trajectory reaches escape radius");
+
+    const auto weak = bh::estimate_plasma_extraction({0.0, 1.0, 10.0, 0.9, 2.0});
+    near(weak.idealized_extracted_energy_joules, 0.0, 0.0, "zero field produces zero toy extraction");
+    const auto plasma = bh::estimate_plasma_extraction({1.0, 1e-8, 10.0, 0.9, 2.0});
+    check(plasma.alfven_speed_m_s > 0.0 && plasma.alfven_speed_m_s < bh::speed_of_light_m_s,
+          "relativistic Alfven speed is causal");
+    check(plasma.spin_coupling_efficiency >= 0.0 && plasma.spin_coupling_efficiency <= 1.0,
+          "toy spin coupling is bounded");
+
+    if (failures == 0) std::cout << "All model tests passed\n";
+    return failures == 0 ? 0 : 1;
+}

@@ -2,9 +2,9 @@
 
 ## 1. Project mission
 
-Build a high-performance C++20 application that ingests a catalogue of observed black holes, validates the available measurements, estimates each object's theoretical rotational-energy reservoir, solves a deterministic Penrose-process optimization problem, and compares a hypothetical amount of deliverable energy with Canadian energy demand.
+Build a high-performance C++20 and Python application that ingests a catalogue of observed black holes, validates the available measurements, estimates each object's theoretical rotational-energy reservoir, solves a deterministic Penrose-process optimization problem for configurable atomic-nucleus projectiles, and visualizes how hypothetical deliverable energy compares with regional and worldwide energy demand.
 
-The project is also a systems-programming learning platform. Multithreading, concurrency, and SIMD are first-class requirements, not optional polish. Every optimized implementation must be compared with a correct scalar reference implementation.
+The project is also a systems-programming and scientific-computing platform. Multithreading, concurrency, SIMD, data-oriented design, L1/L2 cache behavior, and measured latency are first-class requirements, not optional polish. Every optimized implementation must be compared with a correct scalar reference implementation, and Python orchestration must call the same validated C++ engine rather than reimplementing the physics.
 
 The intended audience includes quantitative developers, performance-oriented C++ engineers, scientific-computing teams, and big-technology infrastructure engineers. Optimize the project for mathematical transparency, reproducibility, data quality, numerical correctness, concurrency safety, and defensible performance measurements.
 
@@ -12,11 +12,15 @@ The intended audience includes quantitative developers, performance-oriented C++
 
 Use this description consistently:
 
-> Given observed mass and spin estimates, calculate a black hole's theoretical rotational-energy reservoir, optimize an idealized Penrose extraction event, and compare hypothetical deliverable energy with Canadian energy demand.
+> Given observed mass and spin estimates, calculate a black hole's theoretical rotational-energy reservoir, optimize an idealized Penrose extraction event for a labelled particle species, estimate a hypothetical usable-energy chain, and compare it with cited regional and worldwide energy demand.
 
 Do not claim that the program measures energy that has actually been extracted from an observed black hole. A catalogue normally contains measured or inferred properties such as mass, spin, distance, and uncertainty. It does not contain a measurement of energy removed by a Penrose process.
 
-Do not claim that delivering energy from an astrophysical black hole to Canada is currently feasible. The delivery stage is a transparent scenario model whose assumptions can be changed by the user.
+Do not claim that delivering energy from an astrophysical black hole to Earth is currently feasible. The collection and delivery stages are transparent scenario models whose assumptions can be changed by the user.
+
+Do not say that a particle is shot out of the event horizon. The incident particle splits or interacts inside the ergosphere; one negative-energy fragment may cross the horizon, while the positive-energy fragment must remain outside the horizon and escape to a configured large radius.
+
+Atomic nuclei are configurable incident-particle scenarios, not claims about naturally observed Penrose events. Support known elements and isotopes through a versioned particle-species dataset containing atomic number, mass number, charge, rest mass, provenance, and stability metadata; do not invent nuclear properties or treat a bare nucleus as neutral matter.
 
 Keep these values separate throughout the engine, result schema, and user interface:
 
@@ -25,7 +29,8 @@ Keep these values separate throughout the engine, result schema, and user interf
 3. energy carried to infinity by the optimized escaping fragment;
 4. energy intercepted by a hypothetical collector;
 5. energy remaining after conversion, storage, and transmission;
-6. energy hypothetically available to Canada.
+6. energy hypothetically available at the selected comparison boundary;
+7. cited regional or worldwide demand that the delivered energy is compared against.
 
 Never label one of these quantities as another.
 
@@ -122,12 +127,23 @@ Begin with equatorial geodesics in Boyer-Lindquist coordinates. Add full `r`, `t
 
 Report feasibility, primal and dual residuals, Karush-Kuhn-Tucker residuals where applicable, integration error, termination reason, and whether the result is known only to be a local optimum. A visually convincing trajectory is not proof of correctness.
 
+The projectile selector may instantiate a proton, alpha particle, or a nucleus from the versioned isotope table. Nuclear species determine rest mass and charge, but the first validated geodesic baseline must remain a test-particle model; electromagnetic forces, ionization state, fragmentation, radiation reaction, and plasma coupling must be enabled only by models that explicitly implement and report them.
+
+Implement the physics ladder in this order and never present a lower rung as a higher one:
+
+1. algebraic Kerr reservoir and local energy-ledger model;
+2. equatorial geodesics and event detection;
+3. full Kerr geodesics with conserved invariants;
+4. local four-momentum-conserving Penrose split optimization;
+5. charged-particle motion in documented electromagnetic fields;
+6. relativistic plasma and, ultimately, validated GRMHD modeling.
+
 ### Stage 5: convert extracted energy into a usable-energy scenario
 
 Apply an explicit efficiency chain rather than one unexplained percentage:
 
 ```text
-E_canada = E_extracted
+E_delivered = E_extracted
          * eta_capture
          * eta_conversion
          * eta_storage
@@ -140,15 +156,29 @@ Where:
 - `eta_capture` is the fraction intercepted by a hypothetical collector;
 - `eta_conversion` is the fraction converted into a usable carrier;
 - `eta_storage` accounts for storage losses;
-- `eta_transmission` accounts for delivery losses to Canada.
+- `eta_transmission` accounts for losses to the selected hypothetical delivery boundary.
 
 All efficiencies must be in `[0, 1]`, individually configurable, and visible in the output. Do not hide them in source code. Provide best-case, nominal, and conservative scenario files, but label all three as hypothetical.
 
 Distance must not be represented by a fabricated efficiency formula. If a delivery model is implemented, state its transport mechanism, geometry, travel time, collector area, beam divergence or inverse-square assumptions, and losses. Otherwise, use distance only as context and explicitly say that the delivery physics is not modeled.
 
-### Stage 6: compare the result with Canadian demand
+#### Plasma fidelity contract
 
-Maintain a separate, versioned Canadian energy dataset containing:
+A coefficient-only plasma estimate is permitted as an educational baseline but must be named `toy-plasma` or `reduced-plasma`, not realistic plasma. A model may be labelled realistic only when it solves documented relativistic MHD or GRMHD equations on a stated grid, includes magnetic-field geometry and boundary/initial conditions, demonstrates conservation and resolution convergence, and is validated against analytic tests or a trusted independent code.
+
+The plasma layer estimates energy transported outward through a defined surface; it does not by itself prove energy was intercepted or made usable. Keep these measurements distinct:
+
+```text
+E_outward_flux     = integral of outward matter and electromagnetic energy flux
+E_collector_input  = E_outward_flux * eta_capture
+E_usable           = E_collector_input * eta_conversion * eta_storage * eta_transmission
+```
+
+Report matter-energy flux and electromagnetic Poynting flux separately, along with numerical dissipation, boundary flux balance, grid resolution, timestep policy, and divergence-control error. Python may configure, analyze, and visualize plasma runs, but the performance-critical finite-volume or finite-difference update belongs in the tested C++ engine.
+
+### Stage 6: compare the result with regional and worldwide demand
+
+Maintain a separate, versioned energy-demand dataset containing:
 
 - metric name, such as electricity demand or total final energy use;
 - value and unit;
@@ -157,16 +187,16 @@ Maintain a separate, versioned Canadian energy dataset containing:
 - authoritative source URL or citation;
 - retrieval date.
 
-Do not mix electricity consumption with total energy consumption. Let the user choose the comparison metric.
+Do not mix electricity consumption, primary energy, and total final energy consumption. Let the user choose a metric and geographic scope, including a country, region, or the world.
 
 Calculate perspectives such as:
 
 ```text
-years_of_demand = E_canada / annual_canadian_demand
-average_power    = E_canada / delivery_duration
+years_of_demand = E_delivered / annual_selected_demand
+average_power    = E_delivered / delivery_duration
 ```
 
-Also show the assumed delivery duration, equivalent continuous power, fraction of annual demand, and the difference between theoretical reservoir and usable energy. Time-sensitive Canadian values belong in data files, not hard-coded UI strings.
+Also show the assumed delivery duration, equivalent continuous power, fraction of annual demand, number of households only when supported by a cited definition, and the difference between theoretical reservoir and usable energy. Time-sensitive demand values belong in versioned data files, not hard-coded UI strings.
 
 ### Stage 7: present auditable results
 
@@ -178,12 +208,12 @@ For every black hole, display:
 - incident energy, total escaping energy, net extracted energy, and Penrose efficiency;
 - solver status and conservation residuals;
 - every collection and delivery efficiency;
-- hypothetical usable Canadian energy;
-- Canadian comparison metric, year, source, and result;
+- hypothetical usable delivered energy;
+- selected geographic scope, comparison metric, year, source, and result;
 - uncertainty or sensitivity ranges;
 - runtime and execution backend.
 
-The visualization should show the horizon and ergosphere, incoming/captured/escaping trajectories, a live energy ledger, constraint residuals, and an efficiency waterfall from `E_rot` to `E_canada`. Phase-space maps and Pareto frontiers are more useful than distributions of randomly generated events.
+The visualization should show the horizon and ergosphere, incoming/captured/escaping trajectories, selected element or isotope, a live energy ledger, constraint residuals, and an efficiency waterfall from `E_rot` to `E_delivered`. It must visually distinguish the ergosphere from the event horizon and never animate a fragment emerging from inside the horizon. Phase-space maps and Pareto frontiers are more useful than distributions of randomly generated events.
 
 ### Stage 8: process the catalogue efficiently
 
@@ -313,33 +343,54 @@ Support these execution modes from the CLI:
 
 Every mode must consume the same validated inputs and produce equivalent ordered results within documented tolerances.
 
-## 8. C++ architecture
+## 8. C++ and Python architecture
 
-Target C++20 or newer and use CMake. Keep physics, numerical algorithms, scheduling, I/O, Canadian comparisons, and rendering independent.
+Target C++20 or newer with CMake for the numerical engine, and a supported modern Python version for orchestration, analysis, notebooks, and visualization. Keep physics, numerical algorithms, scheduling, I/O, demand comparisons, and rendering independent; expose the stable C++ API to Python through a thin binding such as pybind11 only after the C++ result schema and ownership model are tested.
 
 ```text
 src/
   domain/        Strong types, catalogue records, scenarios, result schemas
-  io/            Catalogue readers, Canadian datasets, configuration, output
-  physics/       Kerr geometry, invariants, units, rotational energy
+  io/            Catalogue, isotope, demand, configuration, and result I/O
+  physics/       Algebraic model, Kerr geometry, particles, plasma, units
   integrators/   Scalar geodesics, adaptive stepping, event detection
   optimization/  Constraints, shooting/collocation, continuation, sensitivity
   simd/          Structure-of-arrays batches and vectorized kernels
   concurrency/   Bounded queues, thread pool, cancellation, pipeline
   analytics/     Phase maps, Pareto frontiers, uncertainty and sensitivity
   rendering/     Trajectories, energy waterfall, comparison views
-  app/           CLI and interactive entry points
+  app/           C++ CLI and service entry points
+python/
+  bindings/      Thin access to versioned C++ APIs
+  analysis/      Reproducible analysis and sensitivity workflows
+  visualization/ Interactive trajectories, ledgers, and demand views
 tests/
 benchmarks/
 data/catalogues/
-data/canada/
+data/particles/
+data/demand/
 scenarios/
 docs/
 ```
 
 Prefer value types, RAII, explicit ownership, `std::span` or ranges for non-owning views, and strong quantity types at SI boundaries. Avoid global mutable state. Keep solver state, thread count, batch width, tolerances, and scenario assumptions explicit.
 
-Potential dependencies must be justified. Suitable candidates include Eigen, Boost.Odeint, Catch2 or GoogleTest, Google Benchmark, `nlohmann/json`, and Arrow/Parquet or HDF5 when dataset scale warrants them.
+Potential dependencies must be justified. Suitable C++ candidates include Eigen, Boost.Odeint, Catch2 or GoogleTest, Google Benchmark, `nlohmann/json`, pybind11, and Arrow/Parquet or HDF5 when dataset scale warrants them; suitable Python tools include NumPy, SciPy, pandas or Polars, Plotly, and pytest. Python must not sit inside a per-step geodesic or optimization hot loop, and crossing the language boundary must operate on batches or coarse-grained jobs.
+
+### Cache and latency engineering
+
+Treat sub-second latency as a workload-specific service-level objective, never as an unsupported claim about full-fidelity optimization or GRMHD. Define named latency classes, for example: algebraic catalogue query, cached trajectory lookup, single validated trajectory, bounded parameter tile, and full plasma simulation; report median, p95, and p99 latency separately for each class.
+
+Use data-oriented layouts for hot kernels:
+
+- structure-of-arrays batches for mass, spin, radius, energy, angular momentum, charge, and species mass;
+- compact hot records separated from citations, names, strings, and visualization metadata;
+- contiguous, aligned buffers sized through measurement rather than assumed cache sizes;
+- per-worker scratch arenas reused between jobs to avoid allocator traffic;
+- tiles chosen to keep the active metric, state, and residual arrays within measured L1 or L2 working sets where possible;
+- padding or ownership partitioning for frequently written counters to prevent false sharing;
+- precomputed immutable constants and lookup tables only when versioned and numerically verified.
+
+Measure L1/L2 miss rates, branch misses, instructions per cycle, allocation counts, and memory bandwidth with platform-appropriate profilers. A cache optimization is accepted only when it improves a representative benchmark without changing scalar-reference results outside documented tolerances.
 
 ## 9. Deterministic optimization and analysis
 
@@ -405,6 +456,8 @@ Every benchmark report must include:
 - thread count, queue capacity, and batch size;
 - accuracy target and tolerances;
 - wall time, throughput, latency, CPU utilization, and peak memory;
+- median, p95, and p99 latency for the named workload class;
+- L1/L2 cache misses and branch misses when supported by the measurement platform;
 - reference result and measured speedup.
 
 Do not quote a speedup without its baseline. Do not benchmark only trivial energy formulas while implying that the result represents full geodesic optimization.
@@ -414,7 +467,8 @@ Do not quote a speedup without its baseline. Do not benchmark only trivial energ
 Each run must capture:
 
 - input catalogue name, version, checksum, and citations;
-- Canadian comparison dataset version and citation;
+- regional/world energy-demand dataset version and citations;
+- particle/isotope dataset version and citations;
 - code revision and result-schema version;
 - compiler and build configuration;
 - physical constants and unit convention;
@@ -433,13 +487,13 @@ The CLI must support headless execution for CI and compute environments. The UI 
 
 - define strong types and schemas;
 - ingest and validate a small catalogue;
-- ingest a versioned Canadian comparison dataset;
+- ingest versioned particle-species and regional/world demand datasets;
 - calculate `E_mass`, `M_irr`, and `E_rot` with a scalar single-thread kernel;
 - add unit, limit, and dimensional-analysis tests.
 
 ### Milestone 2: scalar trajectory engine
 
-- implement equatorial Kerr geodesics;
+- implement and validate equatorial geodesics before full Kerr geodesics;
 - add adaptive error control and event detection;
 - monitor invariants;
 - validate one hand-constructed Penrose event;
@@ -452,22 +506,31 @@ The CLI must support headless execution for CI and compute environments. The UI 
 - add continuation, sensitivities, and phase-space mapping;
 - record feasibility, residuals, and termination reasons.
 
-### Milestone 4: multithreading
+### Milestone 4: charged particles and plasma foundation
+
+- add isotope-backed mass and charge to incident-particle scenarios;
+- implement charged-particle motion in a documented electromagnetic field;
+- build a scalar relativistic plasma reference with explicit assumptions;
+- add conservation, convergence, and analytic-wave tests before any GRMHD claim;
+- treat realistic GRMHD as a separate validated solver tier, not a coefficient attached to extracted energy.
+
+### Milestone 5: multithreading and cache-aware kernels
 
 - add a fixed worker pool;
 - parallelize independent records and parameter tiles;
 - make solver scratch state thread-local;
 - prove deterministic result equivalence;
 - benchmark scaling and investigate contention and false sharing.
+- profile working sets and tile uniform kernels for measured L1/L2 behavior.
 
-### Milestone 5: concurrent pipeline
+### Milestone 6: concurrent pipeline
 
 - add bounded queues and backpressure;
 - overlap ingestion, validation, computation, and ordered output;
 - implement cancellation and failure propagation;
 - stress-test lifecycle, queue, and exception behavior.
 
-### Milestone 6: SIMD
+### Milestone 7: SIMD
 
 - convert profiled hot data to structure-of-arrays batches;
 - validate compiler auto-vectorization;
@@ -475,10 +538,11 @@ The CLI must support headless execution for CI and compute environments. The UI 
 - handle divergent trajectories and tail lanes;
 - benchmark scalar, SIMD, threaded, and combined modes.
 
-### Milestone 7: Canadian perspective and visualization
+### Milestone 8: Python integration, global perspective, and visualization
 
 - implement the explicit efficiency waterfall;
-- compare with a selected Canadian metric and year;
+- expose coarse-grained, versioned C++ APIs to Python without duplicating physics;
+- compare with a selected regional or worldwide metric and year;
 - show assumptions and citations in every result;
 - render the horizon, ergosphere, trajectories, residuals, phase maps, and energy perspective;
 - create reproducible demonstration scenarios.
@@ -495,7 +559,7 @@ When modifying this repository:
 6. Add equivalence tests before adding each optimized execution mode.
 7. Use multithreading across independent work and SIMD within uniform batches.
 8. Preserve deterministic output ordering regardless of task completion order.
-9. Do not invent catalogue values, Canadian demand values, efficiencies, citations, or benchmark results.
+9. Do not invent catalogue values, isotope properties, demand values, efficiencies, citations, or benchmark results.
 10. Run the relevant tests and benchmarks and report exactly what was run.
 11. Flag idealizations and current technological infeasibility in documentation and UI.
 12. Treat races, deadlocks, instability, infeasibility, conservation drift, and solver failures as defects or explicit results, never values to suppress.
@@ -504,6 +568,6 @@ When modifying this repository:
 
 The completed project should demonstrate one auditable chain:
 
-> Read measured black-hole properties -> validate and normalize them -> calculate the rotational-energy bound -> optimize a physically admissible Penrose event -> apply explicit hypothetical collection and delivery losses -> compare with a cited Canadian demand metric -> reproduce the same ordered results through scalar, multithreaded, concurrent, and SIMD execution modes -> report correctness and performance evidence.
+> Read measured black-hole properties and cited particle-species data -> validate and normalize them -> calculate the rotational-energy bound -> optimize a physically admissible Penrose event whose escaping fragment never crosses the horizon -> model explicitly scoped plasma and collection losses -> compare hypothetical delivered energy with a cited regional or worldwide demand metric -> reproduce equivalent ordered results through scalar, multithreaded, concurrent, SIMD, and Python-facing execution modes -> report correctness, latency, cache, and performance evidence.
 
 That chain, rather than visual effects alone, is the core portfolio result.
