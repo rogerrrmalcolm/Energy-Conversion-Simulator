@@ -6,7 +6,9 @@
 
 namespace bh {
 double kerr_outer_horizon(const double m, const double a) {
-    if (m <= 0.0 || std::abs(a) >= m) throw std::invalid_argument("Kerr requires M>0 and |a|<M");
+    if (!std::isfinite(m) || !std::isfinite(a) || m <= 0.0 || std::abs(a) >= m) {
+        throw std::invalid_argument("Kerr requires finite M>0 and finite |a|<M");
+    }
     return m + std::sqrt(m*m - a*a);
 }
 
@@ -21,7 +23,11 @@ double kerr_radial_potential(const KerrOrbit& o, const double r) {
 Trajectory integrate_kerr(const KerrOrbit& o, const double initial_radius, const double h,
                           const std::size_t max_steps, const double escape_radius) {
     const double horizon = kerr_outer_horizon(o.black_hole_mass, o.spin_length);
-    if (initial_radius <= horizon || h <= 0.0 || (o.radial_direction != -1 && o.radial_direction != 1)) {
+    if (!std::isfinite(initial_radius) || !std::isfinite(h) ||
+        !std::isfinite(escape_radius) || !std::isfinite(o.energy) ||
+        !std::isfinite(o.angular_momentum) || !std::isfinite(o.rest_mass) ||
+        initial_radius <= horizon || h <= 0.0 || escape_radius <= horizon ||
+        o.rest_mass < 0.0 || (o.radial_direction != -1 && o.radial_direction != 1)) {
         throw std::invalid_argument("invalid Kerr integration parameters");
     }
     Trajectory out;

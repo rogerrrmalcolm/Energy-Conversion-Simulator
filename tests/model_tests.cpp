@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -54,6 +55,19 @@ int main() {
           "relativistic Alfven speed is causal");
     check(plasma.spin_coupling_efficiency >= 0.0 && plasma.spin_coupling_efficiency <= 1.0,
           "toy spin coupling is bounded");
+
+    rejected = false;
+    try {
+        (void)bh::estimate_plasma_extraction(
+            {std::numeric_limits<double>::quiet_NaN(), 1.0, 1.0, 0.5, 1.0});
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "plasma model rejects non-finite public input");
+
+    rejected = false;
+    try {
+        (void)bh::kerr_outer_horizon(1.0, std::numeric_limits<double>::quiet_NaN());
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "Kerr model rejects non-finite public input");
 
     if (failures == 0) std::cout << "All model tests passed\n";
     return failures == 0 ? 0 : 1;

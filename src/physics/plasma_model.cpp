@@ -7,7 +7,12 @@
 
 namespace bh {
 PlasmaResult estimate_plasma_extraction(const PlasmaInput& in) {
-    if (in.magnetic_field_tesla < 0.0 || in.mass_density_kg_m3 <= 0.0 ||
+    if (!std::isfinite(in.magnetic_field_tesla) ||
+        !std::isfinite(in.mass_density_kg_m3) ||
+        !std::isfinite(in.flow_area_m2) ||
+        !std::isfinite(in.dimensionless_spin) ||
+        !std::isfinite(in.duration_seconds) ||
+        in.magnetic_field_tesla < 0.0 || in.mass_density_kg_m3 <= 0.0 ||
         in.flow_area_m2 < 0.0 || in.duration_seconds < 0.0 ||
         in.dimensionless_spin < 0.0 || in.dimensionless_spin >= 1.0) {
         throw std::invalid_argument("invalid plasma model input");

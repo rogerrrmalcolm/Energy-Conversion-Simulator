@@ -23,13 +23,30 @@ This transparent zero-dimensional model estimates magnetization, relativistic Al
 ## Build and run
 
 ```powershell
-cmake -S . -B build
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
-.\build\Release\black_hole_demo.exe
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+ctest --test-dir build --output-on-failure
+.\build\black_hole_demo.exe
 ```
 
-Single-configuration generators place the executable directly in `build/`; use `./build/black_hole_demo` in that case.
+Those commands target single-configuration generators such as Ninja and place the executable directly in `build/`; use `./build/black_hole_demo` in that case. With a multi-configuration generator such as Visual Studio, omit `-DCMAKE_BUILD_TYPE=Release` and pass `--config Release` to the build, test, and install commands.
+
+## Use as a CMake library
+
+Install the library into a local prefix:
+
+```powershell
+cmake --install build --prefix install
+```
+
+Then consume it from another CMake project:
+
+```cmake
+find_package(BlackHoleModels 0.1 CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE bh::models)
+```
+
+Configure the consuming project with `-DCMAKE_PREFIX_PATH="<repository>/install"`. The exported target supplies the public include directory and C++20 requirement automatically.
 
 ## Current numerical boundaries
 

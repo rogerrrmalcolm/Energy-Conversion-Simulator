@@ -26,7 +26,11 @@ TrajectoryPoint shifted(const TrajectoryPoint& s, const Derivative& d, double h)
 Trajectory integrate_schwarzschild(const SchwarzschildOrbit& o, const TrajectoryPoint& initial,
                                    const double h, const std::size_t max_steps,
                                    const double escape_radius) {
-    if (o.black_hole_mass <= 0.0 || h <= 0.0 || initial.radius <= 2.0*o.black_hole_mass) {
+    if (!std::isfinite(o.black_hole_mass) || !std::isfinite(o.specific_energy) ||
+        !std::isfinite(o.specific_angular_momentum) || !std::isfinite(initial.radius) ||
+        !std::isfinite(initial.radial_velocity) || !std::isfinite(h) ||
+        !std::isfinite(escape_radius) || o.black_hole_mass <= 0.0 || h <= 0.0 ||
+        initial.radius <= 2.0*o.black_hole_mass || escape_radius <= 2.0*o.black_hole_mass) {
         throw std::invalid_argument("invalid Schwarzschild integration parameters");
     }
     Trajectory out;
