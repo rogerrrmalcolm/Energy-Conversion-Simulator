@@ -24,14 +24,31 @@ void near(double actual, double expected, double tolerance, const char* message)
 int main() {
     const auto nonrotating = bh::rotational_energy(bh::solar_mass_kg, 0.0);
     near(nonrotating.rotational_energy_joules, 0.0, 1.0, "Schwarzschild has no rotational reservoir");
+    near(nonrotating.irreducible_mass_fraction, 1.0, 0.0, "Schwarzschild irreducible mass equals total mass");
+    near(bh::rotational_energy_fraction(0.0), 0.0, 0.0, "zero-spin reservoir fraction is zero");
 
     const auto near_extremal = bh::rotational_energy(1.0, 0.999999999);
     near(near_extremal.rotational_fraction, 1.0-1.0/std::sqrt(2.0), 3.0e-5,
          "near-extremal reservoir approaches 29.29 percent");
 
+    const auto uncertain = bh::rotational_energy(
+        {bh::solar_mass_kg, 0.9, {0.8, 0.9, 0.99}});
+    check(uncertain.rotational_energy_lower_joules < uncertain.rotational_energy_joules,
+          "lower spin bound produces lower rotational reservoir");
+    check(uncertain.rotational_energy_joules < uncertain.rotational_energy_upper_joules,
+          "upper spin bound produces upper rotational reservoir");
+    check(uncertain.d_rotational_energy_d_spin_joules > 0.0,
+          "rotational reservoir sensitivity to spin is positive");
+
     bool rejected = false;
     try { (void)bh::rotational_energy(1.0, 1.0); } catch (const std::invalid_argument&) { rejected = true; }
     check(rejected, "extremal spin is rejected by sub-extremal model");
+
+    rejected = false;
+    try {
+        (void)bh::rotational_energy({1.0, 0.7, {0.6, 0.8, 0.9}});
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "spin uncertainty central value must match the selected spin");
 
     const double r = 10.0;
     const double circular_l = std::sqrt(r*r/(r-3.0));

@@ -5,20 +5,72 @@
 #include <stdexcept>
 
 namespace bh {
-RotationalEnergyResult rotational_energy(const double mass_kg, const double spin) {
-    if (!std::isfinite(mass_kg) || mass_kg <= 0.0) {
-        throw std::invalid_argument("mass must be finite and positive");
-    }
+
+namespace {
+void validate_spin(const double spin) {
     if (!std::isfinite(spin) || spin < 0.0 || spin >= 1.0) {
         throw std::invalid_argument("spin must satisfy 0 <= a_star < 1");
     }
+}
 
+void validate_mass(const double mass_kg) {
+    if (!std::isfinite(mass_kg) || mass_kg <= 0.0) {
+        throw std::invalid_argument("mass must be finite and positive");
+    }
+}
+
+void validate_spin_range(const SpinRange& range) {
+    validate_spin(range.lower);
+    validate_spin(range.central);
+    validate_spin(range.upper);
+    if (range.lower > range.central || range.central > range.upper) {
+        throw std::invalid_argument("spin uncertainty must satisfy lower <= central <= upper");
+    }
+}
+
+double rotational_sensitivity_fraction_per_spin(const double spin) {
+    if (spin == 0.0) {
+        return 0.0;
+    }
+
+    const double root = std::sqrt(1.0 - spin * spin);
+    return spin / (4.0 * root * irreducible_mass_fraction(spin));
+}
+}
+
+double irreducible_mass_fraction(const double spin) {
+    validate_spin(spin);
     const double inner = std::sqrt(1.0 - spin * spin);
-    const double irreducible_fraction = std::sqrt((1.0 + inner) / 2.0);
-    const double mass_energy = mass_kg * speed_of_light_m_s * speed_of_light_m_s;
+    return std::sqrt((1.0 + inner) / 2.0);
+}
+
+double rotational_energy_fraction(const double spin) {
+    return 1.0 - irreducible_mass_fraction(spin);
+}
+
+RotationalEnergyResult rotational_energy(const double mass_kg, const double spin) {
+    return rotational_energy({mass_kg, spin, {spin, spin, spin}});
+}
+
+RotationalEnergyResult rotational_energy(const RotationalEnergyInput& input) {
+    validate_mass(input.mass_kg);
+    validate_spin(input.dimensionless_spin);
+    validate_spin_range(input.spin_uncertainty);
+    if (input.spin_uncertainty.central != input.dimensionless_spin) {
+        throw std::invalid_argument("spin uncertainty central value must match dimensionless_spin");
+    }
+
+    const double irreducible_fraction = irreducible_mass_fraction(input.dimensionless_spin);
+    const double mass_energy = input.mass_kg * speed_of_light_m_s * speed_of_light_m_s;
+    const double rotational_fraction = 1.0 - irreducible_fraction;
+
     return {mass_energy,
-            mass_kg * irreducible_fraction,
-            mass_energy * (1.0 - irreducible_fraction),
-            1.0 - irreducible_fraction};
+            input.mass_kg * irreducible_fraction,
+            irreducible_fraction,
+            mass_energy * rotational_fraction,
+            rotational_fraction,
+            mass_energy * rotational_energy_fraction(input.spin_uncertainty.lower),
+            mass_energy * rotational_energy_fraction(input.spin_uncertainty.upper),
+            mass_energy * rotational_sensitivity_fraction_per_spin(input.dimensionless_spin)};
 }
 }
