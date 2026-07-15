@@ -19,6 +19,15 @@ void validate_mass(const double mass_kg) {
     }
 }
 
+void validate_mass_range(const MassRange& mass) {
+    validate_mass(mass.lower_kg);
+    validate_mass(mass.central_kg);
+    validate_mass(mass.upper_kg);
+    if (mass.lower_kg > mass.central_kg || mass.central_kg > mass.upper_kg) {
+        throw std::invalid_argument("mass range must satisfy lower <= central <= upper");
+    }
+}
+
 void validate_spin_range(const SpinRange& range) {
     validate_spin(range.lower);
     validate_spin(range.central);
@@ -72,5 +81,14 @@ RotationalEnergyResult rotational_energy(const RotationalEnergyInput& input) {
             mass_energy * rotational_energy_fraction(input.spin_uncertainty.lower),
             mass_energy * rotational_energy_fraction(input.spin_uncertainty.upper),
             mass_energy * rotational_sensitivity_fraction_per_spin(input.dimensionless_spin)};
+}
+
+RotationalEnergyRangeResult rotational_energy_range(const RotationalEnergyRangeInput& input) {
+    validate_mass_range(input.mass);
+    validate_spin_range(input.spin);
+
+    return {rotational_energy(input.mass.lower_kg, input.spin.lower),
+            rotational_energy(input.mass.central_kg, input.spin.central),
+            rotational_energy(input.mass.upper_kg, input.spin.upper)};
 }
 }

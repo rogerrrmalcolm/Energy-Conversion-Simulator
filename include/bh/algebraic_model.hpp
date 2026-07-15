@@ -3,6 +3,12 @@
 namespace bh {
 
 // SI boundary model. Internally, the mass ratios are equivalent to G=c=1.
+struct MassRange {
+    double lower_kg{};
+    double central_kg{};
+    double upper_kg{};
+};
+
 struct SpinRange {
     double lower{};
     double central{};
@@ -26,9 +32,22 @@ struct RotationalEnergyResult {
     double d_rotational_energy_d_spin_joules{};
 };
 
+struct RotationalEnergyRangeInput {
+    MassRange mass{};
+    SpinRange spin{};
+};
+
+struct RotationalEnergyRangeResult {
+    RotationalEnergyResult lower{};
+    RotationalEnergyResult central{};
+    RotationalEnergyResult upper{};
+};
+
 [[nodiscard]] RotationalEnergyResult rotational_energy(double mass_kg,
                                                         double dimensionless_spin);
 [[nodiscard]] RotationalEnergyResult rotational_energy(const RotationalEnergyInput& input);
+[[nodiscard]] RotationalEnergyRangeResult rotational_energy_range(
+    const RotationalEnergyRangeInput& input);
 
 [[nodiscard]] double irreducible_mass_fraction(double dimensionless_spin);
 [[nodiscard]] double rotational_energy_fraction(double dimensionless_spin);

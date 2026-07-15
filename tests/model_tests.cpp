@@ -40,6 +40,14 @@ int main() {
     check(uncertain.d_rotational_energy_d_spin_joules > 0.0,
           "rotational reservoir sensitivity to spin is positive");
 
+    const auto ranged = bh::rotational_energy_range(
+        {{8.0 * bh::solar_mass_kg, 10.0 * bh::solar_mass_kg, 12.0 * bh::solar_mass_kg},
+         {0.8, 0.9, 0.99}});
+    check(ranged.lower.rotational_energy_joules < ranged.central.rotational_energy_joules,
+          "lower mass and spin give lower rotational reservoir");
+    check(ranged.central.rotational_energy_joules < ranged.upper.rotational_energy_joules,
+          "upper mass and spin give upper rotational reservoir");
+
     bool rejected = false;
     try { (void)bh::rotational_energy(1.0, 1.0); } catch (const std::invalid_argument&) { rejected = true; }
     check(rejected, "extremal spin is rejected by sub-extremal model");
@@ -49,6 +57,12 @@ int main() {
         (void)bh::rotational_energy({1.0, 0.7, {0.6, 0.8, 0.9}});
     } catch (const std::invalid_argument&) { rejected = true; }
     check(rejected, "spin uncertainty central value must match the selected spin");
+
+    rejected = false;
+    try {
+        (void)bh::rotational_energy_range({{2.0, 1.0, 3.0}, {0.2, 0.3, 0.4}});
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "mass range rejects unordered bounds");
 
     const double r = 10.0;
     const double circular_l = std::sqrt(r*r/(r-3.0));
