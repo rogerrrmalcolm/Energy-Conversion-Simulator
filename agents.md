@@ -123,7 +123,7 @@ The main research problem is deterministic constrained trajectory design:
 
 > Maximize escaping energy subject to four-momentum conservation, causal momenta, capture of the negative-energy fragment, escape of the positive-energy fragment, and the selected Kerr geodesic equations.
 
-Begin with equatorial geodesics in Boyer-Lindquist coordinates. Add full `r`, `theta`, `phi`, and `t` evolution only after the restricted solver is validated. Candidate solution methods include multiple shooting, direct collocation, sequential quadratic programming, continuation, and adaptive subdivision. Cross-check local solutions using a second method or bounded search over the low-dimensional feasible domain.
+Begin with equatorial geodesics in Boyer-Lindquist coordinates. Add full `r`, `theta`, `phi`, and `t` evolution only after the restricted solver is validated. Candidate solution methods include multiple shooting, direct collocation, sequential quadratic programming, continuation, adaptive subdivision, and a bounded A* search over a discretized candidate-parameter graph. An A* search is an optimization-layer tool: it searches combinations of input and split parameters, then calls the physics evaluator for each combination. It must never replace geodesic integration or be described as the particle's physical path through spacetime. Cross-check local solutions using a second method or bounded search over the low-dimensional feasible domain.
 
 Report feasibility, primal and dual residuals, Karush-Kuhn-Tucker residuals where applicable, integration error, termination reason, and whether the result is known only to be a local optimum. A visually convincing trajectory is not proof of correctness.
 
@@ -353,7 +353,7 @@ src/
   io/            Catalogue, isotope, demand, configuration, and result I/O
   physics/       Algebraic model, Kerr geometry, particles, plasma, units
   integrators/   Scalar geodesics, adaptive stepping, event detection
-  optimization/  Constraints, shooting/collocation, continuation, sensitivity
+  optimization/  Candidate graphs, A* search, constraints, shooting/collocation, continuation, sensitivity
   simd/          Structure-of-arrays batches and vectorized kernels
   concurrency/   Bounded queues, thread pool, cancellation, pipeline
   analytics/     Phase maps, Pareto frontiers, uncertainty and sensitivity
@@ -405,6 +405,330 @@ Do not use Monte Carlo as the central analysis method. Prefer:
 - interval bounds or adaptive deterministic subdivision for low-dimensional global checks.
 
 An advanced version may formulate the event as an optimal-control problem. The decision variables are the incident state, split event, and fragment momenta; the dynamics are Kerr geodesics; the objective is energy delivered to infinity. This provides genuine overlap with optimization and calibration systems used by quantitative firms.
+
+### A* parameter-space search: primary algorithmic design
+
+The project may include an A* search layer as a deterministic way to explore a bounded, discretized space of Penrose-event candidate parameters. This is an educational and engineering feature that adds graph algorithms, state-space design, priority queues, heuristic design, reproducibility, and search diagnostics to the project.
+
+The A* layer has one strict boundary:
+
+> A* searches a graph of candidate parameter sets. The Kerr physics engine evaluates each set. The resulting A* path is a record of parameter adjustments, not the physical trajectory of a particle through the ergosphere.
+
+The physical trajectory is obtained only by integrating the selected candidate's geodesic(s). Do not render the A* path as a line moving through the black-hole scene. A visualization may show the physical geodesic separately and may show the A* path as a parameter-space table, plot, or graph.
+
+#### A* search objective
+
+The baseline A* objective is:
+
+> Find a physically feasible candidate that reaches a configured net-energy-extraction target with the lowest parameter-adjustment cost from a declared starting candidate.
+
+For every candidate, calculate:
+
+```text
+eta_penrose = (E_escape - E_input) / E_input
+E_extracted = max(0, E_escape - E_input)
+```
+
+The goal predicate must be explicit:
+
+```text
+goal(candidate) =
+    candidate is in the configured parameter domain
+    AND the split conserves four-momentum within tolerance
+    AND the captured fragment has valid negative energy at infinity and crosses the horizon
+    AND the escaping fragment remains outside the horizon and reaches the configured escape radius
+    AND geodesic invariants and integration residuals are within tolerance
+    AND eta_penrose >= eta_target
+```
+
+Use the term **net extracted energy**, not "contracted energy." `E_escape` includes energy supplied by the incident particle; `E_extracted` is the net gain attributed to the idealized extraction event.
+
+This objective deliberately gives A* a well-defined minimum-cost problem. A* does not automatically find the globally highest-energy candidate. If the user asks for "the maximum energy," the program must use one of these accurate descriptions:
+
+1. Run a bounded exhaustive search and return the highest validated `E_extracted` found.
+2. Run a deterministic optimizer or branch-and-bound method and report its termination and optimality status.
+3. Run A* toward one or more increasing `eta_target` values, then report the highest target reached and the best validated candidate encountered. This is a threshold search, not proof of the global maximum.
+
+Never claim that a first A* goal is the global physical optimum unless a separate exhaustive or mathematically justified global-optimality argument supports that claim.
+
+#### Fixed scenario inputs versus A* search variables
+
+One A* run represents one fully declared hypothetical scenario. The black-hole configuration and the particle model are fixed during that run; A* changes only the bounded candidate variables. This prevents the algorithm from mixing physically different black holes or particle species into a single search path.
+
+| Fixed for one search run | May vary from node to node |
+| --- | --- |
+| black-hole mass and source/scenario label | split radius |
+| dimensionless spin `a_star` | incoming angular momentum or impact parameter |
+| coordinate convention and physical constants | incident direction or inward angle |
+| particle species, rest mass, and charge model | split direction angle |
+| model tier: neutral test particle, equatorial Kerr baseline | permitted momentum-share parameter |
+| escape radius, integration tolerances, and residual tolerances | later, a tightly bounded fragment-mass or energy-share variable |
+| `eta_target`, parameter bounds, and step schedule | no other value unless documented in the scenario |
+
+Mass and spin are scenario inputs, not ordinary A* coordinates. For an observed catalogue record, preserve the original mass and spin values, their units, uncertainty, provenance, and whether the value is observed or a labelled scenario. Do not let a search silently adjust an observation merely to produce a better result.
+
+#### Start with a small, named parameter vector
+
+The first A* implementation must vary no more than three parameters. A recommended initial vector is:
+
+```text
+x = (r_split_over_M, incoming_Lz_over_mM, split_angle_rad)
+```
+
+where:
+
+- `r_split_over_M` is the equatorial split radius normalized by the black-hole mass scale in geometrized units;
+- `incoming_Lz_over_mM` is the incident axial angular momentum normalized by the particle rest mass and black-hole mass scale;
+- `split_angle_rad` is the escaping fragment's local split direction in radians.
+
+For example, a candidate must be written with field names and units, not as an unexplained tuple:
+
+```text
+(r_split_over_M = 3.0,
+ incoming_Lz_over_mM = 1.9,
+ split_angle_rad = 0.28)
+```
+
+Only introduce a fourth variable, such as a normalized momentum-share parameter, after the three-variable graph, evaluator, and tests are correct. A grid with 21 possible values in each of six independent dimensions already contains more than 85 million candidates. This state-space growth is the reason to start small, bound every variable, and record every discretization choice.
+
+Use geometrized and dimensionless quantities inside the search. Convert user-facing SI values only at the scenario-input boundary and report both original and normalized values in the result. Angles are radians internally. Do not mix kilograms, metres, joules, and geometrized coordinates inside a graph key.
+
+Not every momentum component is an independent search variable. The candidate parameterization must leave enough quantities for the physics evaluator to derive from the mass-shell condition and local four-momentum conservation. Do not let users type arbitrary independent momentum and angle values and then call an algebraically inconsistent state a valid node.
+
+#### Candidate-node contract
+
+Each graph node represents one candidate parameter set and its deterministic evaluation. It should conceptually contain:
+
+```text
+node id and canonical quantized parameter key
+candidate parameter values in normalized units
+parent node id and the one local change used to reach this node
+g cost, h heuristic, and f = g + h priority
+physics-evaluation status
+E_input, E_escape, E_extracted, and eta_penrose
+capture, escape, invariant, and residual diagnostics
+search depth and deterministic discovery order
+```
+
+The canonical key must be based on quantized integer grid indices, not raw floating-point bit patterns. For example, store a split-radius index, angular-momentum index, and angle index; derive the displayed floating-point values from the fixed grid origin and step. This prevents numerically equivalent candidates from being evaluated repeatedly because of floating-point roundoff.
+
+Every node must have one of these explicit statuses:
+
+- `outside_search_domain`: violates configured parameter bounds; do not enqueue it.
+- `physics_invalid`: fails a required conservation, mass-shell, causal, coordinate, or finite-value check.
+- `captured_or_non_escaping`: evaluates cleanly but the intended escaping fragment does not reach the escape radius.
+- `escaping_without_target`: escapes but does not reach `eta_target`.
+- `goal_feasible`: satisfies every physical condition and the energy target.
+- `integration_failed`: integrator or event detector did not produce a trustworthy result; preserve its failure reason.
+
+A node is a point in parameter space, not automatically a feasible physical event. The returned A* path may therefore include non-goal parameter states. Label it `parameter_adjustment_path` or `search_trace`, never `particle_path`. Each entry must show its status so the user can see why the search continued.
+
+#### Graph construction and neighbor generation
+
+Generate a deterministic local graph. From a three-parameter node, the baseline graph has up to six direct neighbors:
+
+```text
+r_split index:            -1, +1
+incoming L_z index:       -1, +1
+split-angle index:        -1, +1
+```
+
+Each edge changes exactly one grid index by one configured step. Define a fixed neighbor order, for example radius minus, radius plus, angular momentum minus, angular momentum plus, angle minus, angle plus. Stable ordering is required when priorities tie so repeated runs produce the same result and the same returned path.
+
+Bounds are mandatory:
+
+- the split radius must remain outside the outer horizon and inside the selected ergosphere region;
+- angular momentum, energy, and angles must remain within explicitly documented scenario limits;
+- all values must be finite;
+- the step size must be positive and recorded;
+- a candidate already visited at an equal or lower `g` cost must not be re-expanded;
+- parameter changes must never silently alter fixed black-hole, particle, tolerance, or model-tier inputs.
+
+The initial version uses a fixed coarse grid. A later two-stage version may first search a coarse grid, then construct a smaller, finer grid around the best validated candidate. Record both stages, their bounds, step sizes, node counts, and the parent result. Do not describe coarse-to-fine refinement as a proof of global optimality.
+
+#### A* cost and heuristic contract
+
+For A*, every edge cost must be non-negative. The simple and auditable baseline is a weighted normalized adjustment cost:
+
+```text
+edge_cost =
+    w_r * abs(delta_r_split_over_M) / step_r
+  + w_L * abs(delta_incoming_Lz_over_mM) / step_L
+  + w_a * abs(delta_split_angle_rad) / step_angle
+```
+
+With one-coordinate, one-step neighbors, each edge normally has one positive component. Use `g(node)` for the sum of all edge costs from the declared start node. The weights express a search preference, not a physical force; store them in the scenario and show them in the output.
+
+The baseline heuristic is valid only when it is an admissible lower bound on remaining adjustment cost. If a proven upper bound on achievable efficiency improvement per one-step change is available, a conservative heuristic may be:
+
+```text
+h(node) = minimum_possible_adjustment_cost
+          * ceil(max(0, eta_target - eta_penrose(node)) / proven_eta_gain_per_step)
+```
+
+Do not invent `proven_eta_gain_per_step`. The energy surface can be non-monotonic near capture and escape boundaries. Until such a bound is justified and tested, set:
+
+```text
+h(node) = 0
+```
+
+This makes the baseline search Dijkstra's algorithm, which is slower but retains the correct minimum-cost guarantee. A non-admissible guessed heuristic is permitted only when explicitly labelled `weighted_a_star` or `heuristic_best_first`; it may find a useful candidate faster but cannot claim an optimal adjustment path.
+
+The priority rule is always:
+
+```text
+f(node) = g(node) + h(node)
+```
+
+When two nodes have the same `f`, break ties deterministically using, in order: lower `h`, lower `g`, lexicographic grid key, then discovery order. Do not let pointer addresses, hash-table iteration order, or thread timing choose the result.
+
+#### Physics evaluation sequence for every candidate
+
+The A* module must call a pure, deterministic candidate evaluator owned by the physics/integrator layer. The evaluator must not read a global priority queue, mutate search state, print UI output, or depend on the order in which A* discovers nodes.
+
+For an equatorial neutral test-particle baseline, each evaluation must proceed in this order:
+
+1. Validate finite normalized candidate parameters and convert them to the documented Kerr coordinate/state convention.
+2. Verify that the proposed split event is outside the outer horizon and within the allowed ergosphere domain.
+3. Construct the incident state and integrate or otherwise validate the incident trajectory to the split event.
+4. Construct the two fragment states by enforcing local four-momentum conservation and the applicable mass-shell/causality constraints.
+5. Verify that the candidate negative-energy fragment has the required energy relative to infinity and is captured across the horizon.
+6. Integrate the positive-energy fragment outward; it must remain outside the horizon and reach the configured large escape radius.
+7. Check conservation of `E`, `L_z`, and `Q` where the selected model defines them, plus all integration and split residuals.
+8. Calculate `E_input`, `E_escape`, `E_extracted`, and `eta_penrose`, then return a structured status rather than a bare boolean.
+
+If any required calculation fails, return a structured failure status and numerical diagnostic. Do not turn an integrator failure into zero energy or treat it as a captured particle without recording why.
+
+#### Meaning and reporting of the 20.7 percent limit
+
+The approximately 20.7 percent value belongs to a restricted idealized classical Penrose-process baseline: a neutral single split around an extremal Kerr black hole under its stated assumptions. In the conventional efficiency definition it is:
+
+```text
+eta_penrose_limit = (sqrt(2) - 1) / 2 approximately 0.20710678
+```
+
+It is not the approximately 29 percent total rotational-energy-reservoir limit, it is not a universal result for all Penrose variants, and it is not a delivery efficiency. Do not combine these quantities.
+
+The catalogue model requires sub-extremal `0 <= a_star < 1`, so an exact 20.7 percent result is generally an unattainable limiting target in the baseline model. The UI and CLI must say `near classical single-split limit` rather than `maximum obtainable energy` when a result approaches it. A target at or above the applicable theoretical bound must produce a clear `target_unattainable_under_model` status, not an endless search.
+
+For early demonstrations, choose a lower labelled target such as `eta_target = 0.05` or `0.10` only when the underlying scenario and model can support it. Never choose an energy target merely because it produces a visually pleasing A* path.
+
+#### Required A* result and user-visible output
+
+When A* finds a goal, return a structured result containing at least:
+
+```text
+search status: found_goal, no_solution_within_bounds, target_unattainable_under_model,
+               node_budget_exhausted, time_budget_exhausted, cancelled, or evaluation_failure
+
+fixed scenario: black-hole data/provenance, particle model, model tier, units, tolerances,
+                parameter bounds, grid steps, weights, eta_target, and escape radius
+
+final candidate: named normalized values and user-facing converted values
+energy ledger: E_input, E_escape, E_extracted, eta_penrose, and the separate E_rot reservoir
+physical result: capture status, escape status, event radii, invariant residuals, split residual,
+                 integration error, and termination reason
+search result: total g cost, h value, f value, nodes generated, nodes evaluated, nodes expanded,
+               duplicate nodes skipped, invalid nodes, elapsed time, and deterministic seed/version
+parameter_adjustment_path: ordered nodes from the declared start candidate to the returned goal,
+                           including each named parameter value, local change, status, g/h/f,
+                           eta_penrose, E_extracted, and evaluator diagnostic
+```
+
+For example, the output may truthfully say:
+
+```text
+final candidate:
+  (r_split_over_M = 3.1,
+   incoming_Lz_over_mM = 2.0,
+   split_angle_rad = 0.30)
+
+parameter_adjustment_path:
+  (3.0, 1.9, 0.28) -> (3.1, 1.9, 0.28)
+  -> (3.1, 2.0, 0.28) -> (3.1, 2.0, 0.30)
+```
+
+The example values are a graph-search illustration, not validated astrophysical inputs or an assertion that this candidate escapes. Results must never imply otherwise.
+
+The result must show both the A* parameter-adjustment path and the selected candidate's physically integrated incident/captured/escaping trajectories. They are different artifacts with different meanings.
+
+#### Input, configuration, and reproducibility rules
+
+Start with a versioned scenario file and headless CLI, not a free-form UI. An interactive UI may later create the same scenario file, but it must not introduce hidden defaults. The scenario must explicitly state:
+
+- observed black-hole identifier or a clearly labelled black-hole scenario;
+- original mass/spin values, units, uncertainty, provenance, and normalized values;
+- selected particle species and what force model is enabled;
+- coordinate system, metric signature, physical constants, and unit convention;
+- search-variable names, lower and upper bounds, grid origins, step sizes, and canonical quantization rule;
+- declared start candidate;
+- `eta_target`, edge-cost weights, node/time budgets, and heuristic mode;
+- escape radius, integrator settings, residual tolerances, and model tier;
+- result-schema version, code revision, and deterministic ordering policy.
+
+Reject a scenario with inconsistent units, an invalid starting candidate, a spin outside the model domain, a non-positive step size, reversed bounds, a target outside the declared model's permitted range, or an unlabelled assumed value.
+
+#### Required tests and validation evidence
+
+Test the graph algorithm independently from Kerr physics before connecting them. Use a tiny hand-constructed graph with known edge costs and a known shortest goal path to prove that A*, Dijkstra mode (`h = 0`), parent reconstruction, duplicate handling, and deterministic tie breaking work correctly.
+
+Then test the candidate evaluator independently using analytic limits and fixed hand-constructed scenarios. Only after both layers pass independently may an integration test call A* with the real evaluator.
+
+The A* test suite must cover at least:
+
+- one known toy graph where A* returns the correct minimum-cost path and exact parent sequence;
+- A* with `h = 0` returning the same cost as Dijkstra on the same graph;
+- deterministic repeated runs returning identical final candidate, path, counts, and statuses;
+- invalid bounds, zero or negative step sizes, non-finite inputs, and invalid start candidates;
+- a start candidate that already satisfies the goal;
+- no feasible goal within the bounded graph;
+- a theoretical target rejected as unattainable before unnecessary expansion;
+- duplicate candidate keys reached by different paths, retaining only the lower-cost parent;
+- a tie between candidates, verifying the documented deterministic tie break;
+- physics-invalid, captured, non-escaping, escaping-but-below-target, and goal-feasible evaluation outcomes;
+- error propagation from a failed integrator without hiding the failure;
+- path reconstruction where every returned node contains named values and diagnostics;
+- comparison of the returned goal by a fresh independent evaluator call;
+- evidence that no returned escaping fragment crosses the horizon.
+
+For every search result, re-evaluate the final candidate after the search finishes. A cache hit is not sufficient verification. The returned energy ledger and feasibility status must match within documented floating-point tolerances.
+
+#### Performance and scaling rules
+
+The first A* version is scalar, single-threaded, bounded, and deterministic. Profile the evaluator before optimizing the priority queue. The expensive work is expected to be geodesic and constraint evaluation, not the heap operation.
+
+Cache evaluations by canonical integer grid key only when the cache value includes the full evaluator status and diagnostics. The cache key must include every fixed scenario field that can affect physics; never reuse a candidate result across different black holes, particle models, tolerances, or escape radii.
+
+Do not parallelize one priority queue until the scalar semantics and deterministic result are proven. Later safe parallel work may include independent scenario runs, independent target thresholds, independent bounded tiles, or independent coarse-grid searches. The combined result must still state whether it is an A* result, a tile comparison, or a non-global parallel search.
+
+Kubernetes, when introduced, must run independent deterministic experiment jobs after the local CLI is validated. A Kubernetes Job may vary one explicitly recorded scenario, grid resolution, target, or bounded tile and write a separate result file. Kubernetes must not be presented as part of the A* algorithm or used to hide nondeterministic search behavior.
+
+#### Implementation order for this layer
+
+Implement the algorithmic layer in this order:
+
+Define strongly typed scenario, candidate, node-status, evaluation-result, and search-result schemas in domain/.
+Implement a deterministic scalar candidate evaluator in physics/ and integrators/; verify that it works independently of A*.
+Define the A* search contract: state representation, goal condition, transition cost, heuristic, bounds, and canonical state keys.
+Implement the generic A* engine with a priority queue, best-known costs, closed-state handling, parent links, and path reconstruction.
+Test the generic A* engine on a toy integer-grid graph with known optimal answers.
+Add deterministic neighbor generation for the real parameter space, initially using no more than three search variables.
+Connect A* to one fixed black-hole scenario and the verified scalar evaluator.
+Report the final named parameters, net extracted energy, efficiency, physical diagnostics, total search cost, and complete parameter-adjustment path.
+Establish a reproducible baseline, then add threshold sweeps, coarse-to-fine refinement, and comparisons against Dijkstra and greedy best-first search.
+Add profiling, evaluator caching, independent experiment parallelism, and Kubernetes jobs only after correctness is demonstrated.
+
+Keep the source boundary explicit:
+
+```text
+domain/        search scenario, candidate, evaluation, node, and result value types
+physics/       Kerr formulas and local split constraints; no priority queue
+integrators/   trajectory propagation and event detection; no graph ownership
+optimization/  A* frontier, neighbor generation, costs, heuristics, and path reconstruction
+app/           CLI/UI parsing, scenario persistence, and result presentation
+```
+
+This division keeps the A* design suitable for algorithmic and systems-oriented portfolio work without overstating its scientific meaning.
 
 ## 10. Correctness and validation
 
@@ -502,6 +826,11 @@ The CLI must support headless execution for CI and compute environments. The UI 
 ### Milestone 3: deterministic optimization
 
 - formulate the constrained split problem;
+- define a bounded, normalized two- or three-variable candidate-parameter graph with named units, fixed black-hole inputs, a declared start candidate, and deterministic neighbor order;
+- implement and test scalar A* mechanics separately on a hand-constructed graph before connecting it to Kerr physics;
+- connect A* to the pure candidate evaluator so it finds a minimum parameter-adjustment-cost path to a feasible configured energy target, never a substitute for a physical geodesic;
+- return the final named candidate, net extracted energy, `eta_penrose`, full physical diagnostics, and the ordered parameter-adjustment path used to reach it;
+- compare the A* result with Dijkstra mode (`h = 0`) and report whether a heuristic is admissible, weighted, or disabled;
 - solve and verify feasible capture/escape trajectories;
 - add continuation, sensitivities, and phase-space mapping;
 - record feasibility, residuals, and termination reasons.
@@ -568,6 +897,6 @@ When modifying this repository:
 
 The completed project should demonstrate one auditable chain:
 
-> Read measured black-hole properties and cited particle-species data -> validate and normalize them -> calculate the rotational-energy bound -> optimize a physically admissible Penrose event whose escaping fragment never crosses the horizon -> model explicitly scoped plasma and collection losses -> compare hypothetical delivered energy with a cited regional or worldwide demand metric -> reproduce equivalent ordered results through scalar, multithreaded, concurrent, SIMD, and Python-facing execution modes -> report correctness, latency, cache, and performance evidence.
+> Read measured black-hole properties and cited particle-species data -> validate and normalize them -> calculate the rotational-energy bound -> evaluate physically admissible Penrose-event candidates -> use a deterministic A* parameter-space search to find and report a bounded minimum-adjustment path to a feasible energy target, without confusing that search trace with a particle trajectory -> optimize and cross-check the selected event whose escaping fragment never crosses the horizon -> model explicitly scoped plasma and collection losses -> compare hypothetical delivered energy with a cited regional or worldwide demand metric -> reproduce equivalent ordered results through scalar, multithreaded, concurrent, SIMD, and Python-facing execution modes -> report correctness, latency, cache, and performance evidence.
 
 That chain, rather than visual effects alone, is the core portfolio result.
