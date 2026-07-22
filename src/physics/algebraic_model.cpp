@@ -45,9 +45,9 @@ void validate_mass(const double mass_kg) {
 
 void validate_spin_range(const SpinRange& range) {
     validate_spin(range.lower);
-    validate_spin(range.central);
+    validate_spin(range.central); //what it meant was to take in those specific parameters and pass the range values to a different function that does the validating
     validate_spin(range.upper);
-    if (range.lower > range.central || range.central > range.upper) {
+    if (range.lower > range.central || range.central > range.upper) { //if invalid clause
         throw std::invalid_argument("spin uncertainty must satisfy lower <= central <= upper");
     }
 }
@@ -97,19 +97,8 @@ RotationalEnergyResult rotational_energy(const RotationalEnergyInput& input) {
             mass_energy * rotational_energy_fraction(input.spin_uncertainty.upper),
             mass_energy * rotational_sensitivity_fraction_per_spin(input.dimensionless_spin)};
 }
-
-RotationalEnergyRangeResult rotational_energy_range(const RotationalEnergyRangeInput& input) {
-    validate_mass(input.mass);
-    validate_spin_range(input.spin);
-
-    const auto lower = rotational_energy(input.mass.lower_kg, input.spin.lower);
-    const auto central = rotational_energy(input.mass.central_kg, input.spin.central);
-    const auto upper = rotational_energy(input.mass.upper_kg, input.spin.upper);
-
-    return {lower,
-            central,
-            upper,
-            central.rotational_energy_joules - lower.rotational_energy_joules,
-            upper.rotational_energy_joules - central.rotational_energy_joules};
+RotationalEnergyRangeResult rotational_energy_range(
+    const RotationalEnergyRangeInput& input) {
+        
 }
 }
