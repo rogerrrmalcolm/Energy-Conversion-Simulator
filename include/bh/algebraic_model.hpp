@@ -23,6 +23,11 @@ struct RotationalEnergyInput {
     SpinRange spin_uncertainty{};
 };
 
+struct RotationalEnergyRangeInput {
+    MassRange mass{};
+    SpinRange spin{};
+};
+
 struct RotationalEnergyResult {
     double mass_energy_joules{};
     double irreducible_mass_kg{};
@@ -34,9 +39,19 @@ struct RotationalEnergyResult {
     double d_rotational_energy_d_spin_joules{};
 };
 
+struct RotationalEnergyRangeResult {
+    RotationalEnergyResult lower{};
+    RotationalEnergyResult central{};
+    RotationalEnergyResult upper{};
+    double rotational_energy_uncertainty_minus_joules{};
+    double rotational_energy_uncertainty_plus_joules{};
+};
+
 [[nodiscard]] RotationalEnergyResult rotational_energy(double mass_kg,
                                                         double dimensionless_spin);
 [[nodiscard]] RotationalEnergyResult rotational_energy(const RotationalEnergyInput& input);
+[[nodiscard]] RotationalEnergyRangeResult rotational_energy_range(
+    const RotationalEnergyRangeInput& input);
 
 [[nodiscard]] double irreducible_mass_fraction(double dimensionless_spin);
 [[nodiscard]] double rotational_energy_fraction(double dimensionless_spin);

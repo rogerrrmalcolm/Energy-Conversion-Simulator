@@ -22,7 +22,7 @@ void validate_mass(const MassRange& mass) {
     }
 
     if (mass.lower_kg <= 0.0 ||
-        mass.central_kg <= 0.0 ||
+        mass.central_kg <= 0.0 || // the mass of a black hole must be greater than or equal to one another, if not there is no spin or error
         mass.upper_kg <= 0.0) {
         throw std::invalid_argument("mass values must be positive");
     }
@@ -33,7 +33,14 @@ void validate_mass(const MassRange& mass) {
     }
 }
 
-
+void validate_mass(const double mass_kg) {
+    if (!std::isfinite(mass_kg)) {
+        throw std::invalid_argument("mass value must be finite");
+    }
+    if (mass_kg <= 0.0) {
+        throw std::invalid_argument("mass value must be positive");
+    }
+}
 
 
 void validate_spin_range(const SpinRange& range) {
@@ -89,5 +96,20 @@ RotationalEnergyResult rotational_energy(const RotationalEnergyInput& input) {
             mass_energy * rotational_energy_fraction(input.spin_uncertainty.lower),
             mass_energy * rotational_energy_fraction(input.spin_uncertainty.upper),
             mass_energy * rotational_sensitivity_fraction_per_spin(input.dimensionless_spin)};
+}
+
+RotationalEnergyRangeResult rotational_energy_range(const RotationalEnergyRangeInput& input) {
+    validate_mass(input.mass);
+    validate_spin_range(input.spin);
+
+    const auto lower = rotational_energy(input.mass.lower_kg, input.spin.lower);
+    const auto central = rotational_energy(input.mass.central_kg, input.spin.central);
+    const auto upper = rotational_energy(input.mass.upper_kg, input.spin.upper);
+
+    return {lower,
+            central,
+            upper,
+            central.rotational_energy_joules - lower.rotational_energy_joules,
+            upper.rotational_energy_joules - central.rotational_energy_joules};
 }
 }
