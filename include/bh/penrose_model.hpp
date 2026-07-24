@@ -32,6 +32,8 @@ struct EquatorialPenroseScenario {
     double escape_radius_over_m{20.0};
     double integration_step{0.002};
     std::size_t max_integration_steps{50'000};
+    KerrIntegrationControl integration_control{};
+    // Maximum dimensionless normalized conservation or initialization residual.
     double residual_tolerance{1.0e-8};
 };
 
@@ -51,6 +53,7 @@ struct PenroseEventResult {
     double energy_conservation_residual{};
     double angular_momentum_conservation_residual{};
     double geodesic_initialization_residual{};
+    double maximum_normalized_residual{};
     // These are physical spacetime trajectories, unlike any future parameter search trace.
     Trajectory incoming_trajectory{};
     Trajectory captured_trajectory{};

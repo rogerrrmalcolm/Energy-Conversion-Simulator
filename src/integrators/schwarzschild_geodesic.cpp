@@ -6,21 +6,51 @@
 
 namespace bh {
 namespace {
-struct Derivative { double r, phi, t, ur; };
+constexpr double radial_potential_tolerance = 1.0e-10;
 
-Derivative derivative(const SchwarzschildOrbit& o, const TrajectoryPoint& s) {
-    const double r = s.radius;
-    const double m = o.black_hole_mass;
-    const double l2 = o.specific_angular_momentum * o.specific_angular_momentum;
-    return {s.radial_velocity,
-            o.specific_angular_momentum / (r * r),
-            o.specific_energy / (1.0 - 2.0 * m / r),
-            -m / (r * r) + l2 / (r * r * r) - 3.0 * m * l2 / (r * r * r * r)};
+double horizon_radius(const double mass) {
+    const double horizon = 2.0 * mass;
+    if (!std::isfinite(horizon)) {
+        throw std::overflow_error("Schwarzschild horizon radius overflowed");
+    }
+    return horizon;
 }
 
-TrajectoryPoint shifted(const TrajectoryPoint& s, const Derivative& d, double h) {
-    return {s.affine_parameter + h, s.radius + h*d.r, s.phi + h*d.phi,
-            s.coordinate_time + h*d.t, s.radial_velocity + h*d.ur};
+struct Derivative {
+    double r;
+    double phi;
+    double t;
+    double ur;
+};
+
+void validate_orbit(const SchwarzschildOrbit& orbit) {
+    if (!std::isfinite(orbit.black_hole_mass) || !std::isfinite(orbit.specific_energy) ||
+        !std::isfinite(orbit.specific_angular_momentum) || orbit.black_hole_mass <= 0.0 ||
+        orbit.specific_energy <= 0.0) {
+        throw std::invalid_argument("invalid Schwarzschild orbit parameters");
+    }
+}
+
+Derivative derivative(const SchwarzschildOrbit& orbit, const TrajectoryPoint& state) {
+    const double radius = state.radius;
+    const double mass = orbit.black_hole_mass;
+    const double angular_momentum_squared =
+        orbit.specific_angular_momentum * orbit.specific_angular_momentum;
+    return {state.radial_velocity,
+            orbit.specific_angular_momentum / (radius * radius),
+            orbit.specific_energy / (1.0 - 2.0 * mass / radius),
+            -mass / (radius * radius) + angular_momentum_squared / (radius * radius * radius) -
+                3.0 * mass * angular_momentum_squared /
+                    (radius * radius * radius * radius)};
+}
+
+TrajectoryPoint shifted(const TrajectoryPoint& state, const Derivative& derivative,
+                        const double step) {
+    return {state.affine_parameter + step,
+            state.radius + step * derivative.r,
+            state.phi + step * derivative.phi,
+            state.coordinate_time + step * derivative.t,
+            state.radial_velocity + step * derivative.ur};
 }
 
 TrajectoryPoint interpolate_event(const TrajectoryPoint& start, const TrajectoryPoint& end,
@@ -35,49 +65,81 @@ TrajectoryPoint interpolate_event(const TrajectoryPoint& start, const Trajectory
             start.coordinate_time + fraction * (end.coordinate_time - start.coordinate_time),
             start.radial_velocity + fraction * (end.radial_velocity - start.radial_velocity)};
 }
+}  // namespace
+
+double schwarzschild_radial_potential(const SchwarzschildOrbit& orbit, const double radius) {
+    validate_orbit(orbit);
+    if (!std::isfinite(radius) || radius <= horizon_radius(orbit.black_hole_mass)) {
+        throw std::invalid_argument("Schwarzschild radial potential requires radius outside horizon");
+    }
+    const double lapse = 1.0 - 2.0 * orbit.black_hole_mass / radius;
+    const double angular_term =
+        orbit.specific_angular_momentum * orbit.specific_angular_momentum / (radius * radius);
+    const double potential = orbit.specific_energy * orbit.specific_energy -
+                             lapse * (1.0 + angular_term);
+    if (!std::isfinite(potential)) {
+        throw std::overflow_error("Schwarzschild radial potential overflowed");
+    }
+    return potential;
 }
 
-Trajectory integrate_schwarzschild(const SchwarzschildOrbit& o, const TrajectoryPoint& initial,
-                                   const double h, const std::size_t max_steps,
-                                   const double escape_radius) {
-    if (!std::isfinite(o.black_hole_mass) || !std::isfinite(o.specific_energy) ||
-        !std::isfinite(o.specific_angular_momentum) || !std::isfinite(initial.radius) ||
-        !std::isfinite(initial.affine_parameter) || !std::isfinite(initial.phi) ||
-        !std::isfinite(initial.coordinate_time) || !std::isfinite(initial.radial_velocity) ||
-        !std::isfinite(h) ||
-        !std::isfinite(escape_radius) || o.black_hole_mass <= 0.0 || h <= 0.0 ||
-        max_steps == 0 || initial.radius <= 2.0*o.black_hole_mass ||
+Trajectory integrate_schwarzschild(const SchwarzschildOrbit& orbit,
+                                   const TrajectoryPoint& initial, const double step,
+                                   const std::size_t max_steps, const double escape_radius) {
+    validate_orbit(orbit);
+    if (!std::isfinite(initial.affine_parameter) || !std::isfinite(initial.radius) ||
+        !std::isfinite(initial.phi) || !std::isfinite(initial.coordinate_time) ||
+        !std::isfinite(initial.radial_velocity) || !std::isfinite(step) ||
+        !std::isfinite(escape_radius) || step <= 0.0 || max_steps == 0 ||
+        initial.radius <= horizon_radius(orbit.black_hole_mass) ||
         escape_radius <= initial.radius) {
         throw std::invalid_argument("invalid Schwarzschild integration parameters");
     }
+
+    const double initial_potential = schwarzschild_radial_potential(orbit, initial.radius);
+    const double radial_velocity_squared = initial.radial_velocity * initial.radial_velocity;
+    const double normalization_scale =
+        std::max({1.0, std::abs(initial_potential), radial_velocity_squared});
+    if (initial_potential < -radial_potential_tolerance ||
+        std::abs(radial_velocity_squared - initial_potential) >
+            radial_potential_tolerance * normalization_scale) {
+        throw std::invalid_argument(
+            "initial Schwarzschild radial velocity violates the timelike mass-shell relation");
+    }
+
     Trajectory out;
     out.points.reserve(max_steps + 1);
     out.points.push_back(initial);
-    out.diagnostics.final_step = h;
-    const double horizon_event = 2.0 * o.black_hole_mass * (1.0 + 1e-6);
+    out.diagnostics.final_step = step;
+    const double horizon_event = horizon_radius(orbit.black_hole_mass) * (1.0 + 1.0e-6);
+    if (!std::isfinite(horizon_event)) {
+        throw std::overflow_error("Schwarzschild horizon event radius overflowed");
+    }
+
     for (std::size_t i = 0; i < max_steps; ++i) {
-        const auto& s = out.points.back();
-        const auto k1 = derivative(o, s);
-        const auto k2 = derivative(o, shifted(s, k1, h/2.0));
-        const auto k3 = derivative(o, shifted(s, k2, h/2.0));
-        const auto k4 = derivative(o, shifted(s, k3, h));
-        Derivative k{(k1.r+2*k2.r+2*k3.r+k4.r)/6.0,
-                     (k1.phi+2*k2.phi+2*k3.phi+k4.phi)/6.0,
-                     (k1.t+2*k2.t+2*k3.t+k4.t)/6.0,
-                     (k1.ur+2*k2.ur+2*k3.ur+k4.ur)/6.0};
-        auto next = shifted(s, k, h);
+        const TrajectoryPoint state = out.points.back();
+        const Derivative k1 = derivative(orbit, state);
+        const Derivative k2 = derivative(orbit, shifted(state, k1, step / 2.0));
+        const Derivative k3 = derivative(orbit, shifted(state, k2, step / 2.0));
+        const Derivative k4 = derivative(orbit, shifted(state, k3, step));
+        const Derivative average{
+            (k1.r + 2.0 * k2.r + 2.0 * k3.r + k4.r) / 6.0,
+            (k1.phi + 2.0 * k2.phi + 2.0 * k3.phi + k4.phi) / 6.0,
+            (k1.t + 2.0 * k2.t + 2.0 * k3.t + k4.t) / 6.0,
+            (k1.ur + 2.0 * k2.ur + 2.0 * k3.ur + k4.ur) / 6.0};
+        const TrajectoryPoint next = shifted(state, average, step);
         if (!std::isfinite(next.radius) || !std::isfinite(next.coordinate_time)) {
             out.termination = TrajectoryTermination::invalid_state;
             break;
         }
         if (next.radius <= horizon_event) {
-            out.points.push_back(interpolate_event(s, next, horizon_event));
+            out.points.push_back(interpolate_event(state, next, horizon_event));
             ++out.diagnostics.accepted_steps;
             out.termination = TrajectoryTermination::crossed_horizon;
             break;
         }
         if (next.radius >= escape_radius) {
-            out.points.push_back(interpolate_event(s, next, escape_radius));
+            out.points.push_back(interpolate_event(state, next, escape_radius));
             ++out.diagnostics.accepted_steps;
             out.termination = TrajectoryTermination::reached_escape_radius;
             break;
@@ -87,4 +149,4 @@ Trajectory integrate_schwarzschild(const SchwarzschildOrbit& o, const Trajectory
     }
     return out;
 }
-}
+}  // namespace bh

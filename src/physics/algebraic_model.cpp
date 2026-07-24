@@ -54,6 +54,19 @@ void validate_spin_range(const SpinRange& range) {
     }
 }
 
+void validate_result(const RotationalEnergyResult& result) {
+    if (!std::isfinite(result.mass_energy_joules) ||
+        !std::isfinite(result.irreducible_mass_kg) ||
+        !std::isfinite(result.irreducible_mass_fraction) ||
+        !std::isfinite(result.rotational_energy_joules) ||
+        !std::isfinite(result.rotational_fraction) ||
+        !std::isfinite(result.rotational_energy_lower_joules) ||
+        !std::isfinite(result.rotational_energy_upper_joules) ||
+        !std::isfinite(result.d_rotational_energy_d_spin_joules)) {
+        throw std::overflow_error("rotational-energy calculation overflowed");
+    }
+}
+
 bool nearly_equal(const double left, const double right) {
     const double scale = std::max({1.0, std::abs(left), std::abs(right)});
     return std::abs(left - right) <=
@@ -96,14 +109,17 @@ RotationalEnergyResult rotational_energy(const RotationalEnergyInput& input) {
     const double mass_energy = input.mass_kg * speed_of_light_m_s * speed_of_light_m_s;
     const double rotational_fraction = 1.0 - irreducible_fraction;
 
-    return {mass_energy,
-            input.mass_kg * irreducible_fraction,
-            irreducible_fraction,
-            mass_energy * rotational_fraction,
-            rotational_fraction,
-            mass_energy * rotational_energy_fraction(input.spin_uncertainty.lower),
-            mass_energy * rotational_energy_fraction(input.spin_uncertainty.upper),
-            mass_energy * rotational_sensitivity_fraction_per_spin(input.dimensionless_spin)};
+    const RotationalEnergyResult result{
+        mass_energy,
+        input.mass_kg * irreducible_fraction,
+        irreducible_fraction,
+        mass_energy * rotational_fraction,
+        rotational_fraction,
+        mass_energy * rotational_energy_fraction(input.spin_uncertainty.lower),
+        mass_energy * rotational_energy_fraction(input.spin_uncertainty.upper),
+        mass_energy * rotational_sensitivity_fraction_per_spin(input.dimensionless_spin)};
+    validate_result(result);
+    return result;
 }
 RotationalEnergyRangeResult rotational_energy_range(
     const RotationalEnergyRangeInput& input) {

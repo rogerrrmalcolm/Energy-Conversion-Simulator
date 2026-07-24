@@ -103,10 +103,39 @@ int main() {
 
     const double r = 10.0;
     const double circular_l = std::sqrt(r*r/(r-3.0));
+    const double circular_energy = (r - 2.0) / std::sqrt(r * (r - 3.0));
+    const bh::SchwarzschildOrbit circular_orbit{1.0, circular_energy, circular_l};
+    near(bh::schwarzschild_radial_potential(circular_orbit, r), 0.0, 1e-14,
+         "Schwarzschild circular orbit satisfies the radial mass-shell relation");
     const auto circular = bh::integrate_schwarzschild(
-        {1.0, 0.956182887, circular_l}, {0.0, r, 0.0, 0.0, 0.0},
+        circular_orbit, {0.0, r, 0.0, 0.0, 0.0},
         1e-3, 1000, 20.0);
     near(circular.points.back().radius, r, 1e-10, "Schwarzschild circular orbit remains circular");
+
+    const bh::SchwarzschildOrbit radial_schwarzschild{1.0, 1.0, 0.0};
+    const double radial_start = 10.0;
+    const auto schwarzschild_infall = bh::integrate_schwarzschild(
+        radial_schwarzschild,
+        {0.0, radial_start, 0.0, 0.0, -std::sqrt(2.0 / radial_start)},
+        1e-3, 30'000, 20.0);
+    const double schwarzschild_horizon_event = 2.0 * (1.0 + 1.0e-6);
+    const double expected_schwarzschild_infall =
+        2.0 * (std::pow(radial_start, 1.5) -
+               std::pow(schwarzschild_horizon_event, 1.5)) /
+        (3.0 * std::sqrt(2.0));
+    check(schwarzschild_infall.termination == bh::TrajectoryTermination::crossed_horizon,
+          "Schwarzschild radial free fall reaches the horizon event");
+    near_relative(schwarzschild_infall.points.back().affine_parameter,
+                  expected_schwarzschild_infall, 1.0e-6,
+                  "Schwarzschild RK4 free fall matches the analytic proper time");
+
+    rejected = false;
+    try {
+        (void)bh::integrate_schwarzschild(
+            radial_schwarzschild, {0.0, radial_start, 0.0, 0.0, 0.0},
+            1e-3, 1000, 20.0);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "Schwarzschild integration rejects an inconsistent radial velocity");
 
     near(bh::kerr_outer_horizon(1.0, 0.0), 2.0, 1e-14,
          "Kerr horizon reduces to Schwarzschild horizon");
@@ -149,6 +178,12 @@ int main() {
     check(analytic_infall.diagnostics.accepted_steps > 0 &&
               analytic_infall.diagnostics.maximum_normalized_error <= 1.0,
           "adaptive Kerr diagnostics report an accepted bounded-error solution");
+    const auto adaptive_probe = bh::integrate_kerr_to_radius(
+        radial_infall, 10.0, 8.0, 1.0, 100'000, {1.0e-12, 1.0e-12, 0.0});
+    check(adaptive_probe.termination == bh::TrajectoryTermination::reached_target_radius &&
+              adaptive_probe.diagnostics.rejected_steps > 0 &&
+              adaptive_probe.diagnostics.maximum_normalized_error <= 1.0,
+          "adaptive Kerr integration rejects and refines an overly coarse trial step");
 
     rejected = false;
     try {
@@ -158,7 +193,7 @@ int main() {
     check(rejected, "Kerr integration rejects invalid error-control settings");
 
     const auto penrose = bh::evaluate_equatorial_penrose_event(
-        {1.0, 0.999, 1.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, 1e-7},
+        {1.0, 0.999, 1.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, {}, 1e-7},
         {1.10, 2.07, -2.0});
     if (penrose.status != bh::PenroseEventStatus::physically_feasible) {
         std::cerr << "Penrose evaluator status: "
@@ -172,6 +207,8 @@ int main() {
           "reference split satisfies fragment mass shells");
     check(penrose.geodesic_initialization_residual <= 1e-7,
           "reference fragments reconstruct from their Kerr conserved quantities");
+    check(penrose.maximum_normalized_residual <= 1e-7,
+          "reference event satisfies its normalized residual tolerance");
     check(penrose.captured_trajectory.termination == bh::TrajectoryTermination::crossed_horizon,
           "negative-energy reference fragment crosses horizon");
     check(penrose.escaping_trajectory.termination ==
@@ -179,8 +216,17 @@ int main() {
           "positive-energy reference fragment reaches configured escape radius");
     check(penrose.extracted_energy > 0.0 && penrose.eta_penrose > 0.0,
           "reference event reports positive net extracted energy");
+    const auto scaled_penrose = bh::evaluate_equatorial_penrose_event(
+        {2.0, 0.999, 2.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, {}, 1e-7},
+        {1.10, 2.07, -2.0});
+    check(scaled_penrose.status == bh::PenroseEventStatus::physically_feasible,
+          "scaled normalized event remains physically feasible");
+    near_relative(scaled_penrose.eta_penrose, penrose.eta_penrose, 1.0e-8,
+                  "dimensionless Penrose efficiency is invariant under common scaling");
+    check(scaled_penrose.maximum_normalized_residual <= 1e-7,
+          "scaled event satisfies the normalized residual tolerance");
     const auto outside_ergosphere = bh::evaluate_equatorial_penrose_event(
-        {1.0, 0.999, 1.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, 1e-7},
+        {1.0, 0.999, 1.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, {}, 1e-7},
         {2.1, 2.07, -2.0});
     check(outside_ergosphere.status == bh::PenroseEventStatus::outside_ergosphere,
           "split outside the equatorial ergosphere is rejected");
@@ -191,6 +237,8 @@ int main() {
          "scenario loader preserves the declared spin");
     near(loaded_event.split.split_radius_over_m, 1.10, 0.0,
          "scenario loader preserves the declared split radius");
+    near(loaded_event.scenario.integration_control.relative_tolerance, 1.0e-9, 0.0,
+         "scenario loader preserves the declared integration tolerance");
     const auto loaded_penrose =
         bh::evaluate_equatorial_penrose_event(loaded_event.scenario, loaded_event.split);
     check(loaded_penrose.status == bh::PenroseEventStatus::physically_feasible,
@@ -226,6 +274,40 @@ int main() {
             {std::numeric_limits<double>::quiet_NaN(), 1.0, 1.0, 0.5, 1.0});
     } catch (const std::invalid_argument&) { rejected = true; }
     check(rejected, "plasma model rejects non-finite public input");
+
+    bool overflow_rejected = false;
+    try {
+        (void)bh::rotational_energy(std::numeric_limits<double>::max(), 0.5);
+    } catch (const std::overflow_error&) { overflow_rejected = true; }
+    check(overflow_rejected, "algebraic model rejects non-finite overflow results");
+
+    overflow_rejected = false;
+    try {
+        (void)bh::estimate_plasma_extraction(
+            {std::numeric_limits<double>::max(), 1.0, 1.0, 0.5, 1.0});
+    } catch (const std::overflow_error&) { overflow_rejected = true; }
+    check(overflow_rejected, "plasma model rejects non-finite overflow results");
+
+    overflow_rejected = false;
+    try {
+        (void)bh::kerr_outer_horizon(
+            std::numeric_limits<double>::max(),
+            std::numeric_limits<double>::max() / 2.0);
+    } catch (const std::overflow_error&) { overflow_rejected = true; }
+    check(overflow_rejected, "Kerr geometry rejects non-finite overflow results");
+
+    overflow_rejected = false;
+    try { (void)bh::kerr_equatorial_sigma(std::numeric_limits<double>::max()); }
+    catch (const std::overflow_error&) { overflow_rejected = true; }
+    check(overflow_rejected, "Kerr sigma rejects non-finite overflow results");
+
+    overflow_rejected = false;
+    try {
+        (void)bh::schwarzschild_radial_potential(
+            {std::numeric_limits<double>::max(), 1.0, 0.0},
+            std::numeric_limits<double>::max());
+    } catch (const std::overflow_error&) { overflow_rejected = true; }
+    check(overflow_rejected, "Schwarzschild geometry rejects non-finite horizon results");
 
     rejected = false;
     try {

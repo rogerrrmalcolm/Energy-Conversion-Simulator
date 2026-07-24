@@ -115,6 +115,15 @@ EquatorialPenroseEventInput load_equatorial_penrose_event_input(
             input.scenario.integration_step = parse_double(value, line_number, key);
         } else if (key == "max_integration_steps") {
             input.scenario.max_integration_steps = parse_size(value, line_number, key);
+        } else if (key == "integration_absolute_tolerance") {
+            input.scenario.integration_control.absolute_tolerance =
+                parse_double(value, line_number, key);
+        } else if (key == "integration_relative_tolerance") {
+            input.scenario.integration_control.relative_tolerance =
+                parse_double(value, line_number, key);
+        } else if (key == "integration_minimum_step") {
+            input.scenario.integration_control.minimum_step =
+                parse_double(value, line_number, key);
         } else if (key == "residual_tolerance") {
             input.scenario.residual_tolerance = parse_double(value, line_number, key);
         } else if (key == "split_radius_over_m") {
@@ -129,7 +138,7 @@ EquatorialPenroseEventInput load_equatorial_penrose_event_input(
         }
     }
 
-    constexpr std::array<std::string_view, 14> required_keys{
+    constexpr std::array<std::string_view, 17> required_keys{
         "scenario_version",
         "black_hole_mass",
         "dimensionless_spin",
@@ -140,6 +149,9 @@ EquatorialPenroseEventInput load_equatorial_penrose_event_input(
         "escape_radius_over_m",
         "integration_step",
         "max_integration_steps",
+        "integration_absolute_tolerance",
+        "integration_relative_tolerance",
+        "integration_minimum_step",
         "residual_tolerance",
         "split_radius_over_m",
         "incoming_lz_over_m_m",

@@ -12,6 +12,8 @@ struct SchwarzschildOrbit {
     double specific_angular_momentum{0.0};
 };
 
+[[nodiscard]] double schwarzschild_radial_potential(const SchwarzschildOrbit& orbit,
+                                                     double radius);
 [[nodiscard]] Trajectory integrate_schwarzschild(
     const SchwarzschildOrbit& orbit, const TrajectoryPoint& initial,
     double step, std::size_t max_steps, double escape_radius);

@@ -26,6 +26,11 @@ PlasmaResult estimate_plasma_extraction(const PlasmaInput& in) {
     // Deliberately visible heuristic: spin availability times magnetic coupling.
     const double coupling = std::clamp(in.dimensionless_spin*in.dimensionless_spin *
                                        sigma/(1.0+sigma), 0.0, 1.0);
-    return {sigma, alfven, poynting, coupling, poynting*coupling*in.duration_seconds};
+    const double extracted_energy = poynting*coupling*in.duration_seconds;
+    if (!std::isfinite(sigma) || !std::isfinite(alfven) || !std::isfinite(poynting) ||
+        !std::isfinite(coupling) || !std::isfinite(extracted_energy)) {
+        throw std::overflow_error("plasma calculation overflowed");
+    }
+    return {sigma, alfven, poynting, coupling, extracted_energy};
 }
 }

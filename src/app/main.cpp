@@ -117,6 +117,14 @@ void run_penrose_event(const int argc, char* argv[]) {
               << "  outer horizon r+:        " << result.horizon_radius << " M\n"
               << "  equatorial static limit: " << result.static_limit_radius << " M\n"
               << "  split radius:            " << result.split_radius << " M\n\n"
+              << "Integration control\n"
+              << "  maximum step:            " << input.scenario.integration_step << "\n"
+              << "  absolute tolerance:      "
+              << input.scenario.integration_control.absolute_tolerance << "\n"
+              << "  relative tolerance:      "
+              << input.scenario.integration_control.relative_tolerance << "\n"
+              << "  minimum step:            "
+              << input.scenario.integration_control.minimum_step << "\n\n"
               << "Energy ledger (normalized geometric units)\n"
               << "  input energy:            " << result.input_energy << "\n"
               << "  captured-fragment energy: " << result.captured_energy << "\n"
@@ -130,6 +138,8 @@ void run_penrose_event(const int argc, char* argv[]) {
               << "  angular-momentum residual: "
               << result.angular_momentum_conservation_residual << "\n"
               << "  geodesic initialization: " << result.geodesic_initialization_residual
+              << "\n"
+              << "  maximum normalized residual: " << result.maximum_normalized_residual
               << "\n"
               << "  incoming trajectory:     "
               << termination_name(result.incoming_trajectory.termination) << "\n"

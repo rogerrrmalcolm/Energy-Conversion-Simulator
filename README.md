@@ -34,7 +34,7 @@ P(r) = E*(r^2 + a^2) - a*L_z
 R(r) = P(r)^2 - Delta(r) * (mu^2*r^2 + (L_z - a*E)^2)
 ~~~
 
-R(r) >= 0 is required for the radial state to be allowed. The integrator uses a fixed-step RK4 update and returns explicit termination states for a horizon crossing, a configured escape radius, a requested target radius, a turning point, or an invalid state.
+R(r) >= 0 is required for the radial state to be allowed. The integrator uses adaptive RK4 step doubling: it compares one full step with two half steps, accepts the higher-accuracy state only when the normalized radial and azimuthal error is within tolerance, and records accepted/rejected-step diagnostics. Boyer-Lindquist coordinate time is reported but excluded from step control because it becomes coordinate-singular at the horizon. The result returns explicit termination states for a horizon crossing, a configured escape radius, a requested target radius, a turning point, or an invalid state.
 
 ### Restricted Penrose event
 
@@ -111,13 +111,16 @@ initial_radius_over_m
 escape_radius_over_m
 integration_step
 max_integration_steps
+integration_absolute_tolerance
+integration_relative_tolerance
+integration_minimum_step
 residual_tolerance
 split_radius_over_m
 incoming_lz_over_m_m
 split_angle_rad
 ~~~
 
-All values in this file are normalized geometrized inputs except the dimensionless spin and angle, which is measured in radians.
+All values in this file are normalized geometrized inputs except the dimensionless spin and angle, which is measured in radians. The integration tolerances govern adaptive RK4 error control; residual_tolerance is the maximum normalized conservation or geodesic-initialization residual allowed for a physically feasible Penrose event.
 
 ## Validation
 
@@ -125,16 +128,22 @@ model_tests checks:
 
 - zero-spin and near-extremal algebraic limits;
 - mass and spin range ordering and uncertainty reporting;
+- analytic spin sensitivity, floating-point uncertainty roundoff, and non-finite-result rejection;
+- Schwarzschild timelike radial mass-shell validation and analytic radial free-fall time;
 - Kerr horizon and static-limit formulas;
 - allowed radial potential, horizon capture, and configured-radius escape;
 - a local Penrose split with conservation residual checks;
+- an analytic radial Schwarzschild-limit Kerr infall and adaptive-step rejection/refinement;
+- scale invariance of the normalized Penrose efficiency;
 - rejection of a split outside the ergosphere;
-- loading and executing the versioned reference scenario;
-- toy-plasma input validation and causal Alfven speed.
+- loading, rejecting malformed scenarios, and executing the versioned reference scenario;
+- CLI help, algebraic, uncertainty-range, valid-Penrose, and rejected-scenario workflows;
+- installation, downstream CMake configuration, compilation, and execution of a package consumer;
+- toy-plasma input validation, overflow rejection, and causal Alfven speed.
 
 ## Deliberate limits and next work
 
-- Kerr motion is equatorial only, has Q = 0, uses fixed-step RK4, and does not yet continue through radial turning points.
+- Kerr motion is equatorial only, has Q = 0, uses adaptive RK4, and does not yet continue through radial turning points.
 - The Penrose model is a neutral, idealized two-body test-particle split. It has no charged-particle fields, radiation reaction, backreaction, collision model, nuclear fragmentation model, or GRMHD.
 - The plasma component is a reduced toy model, not MHD or GRMHD.
 - A* parameter search is deliberately not implemented yet. Any future search must call this evaluator for each parameter set and must never be presented as a particle trajectory.

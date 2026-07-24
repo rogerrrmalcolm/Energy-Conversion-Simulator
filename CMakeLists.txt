@@ -66,6 +66,14 @@ if(BH_BUILD_TESTS)
         "-DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/invalid_penrose_unknown_key.cfg"
         "-DEXPECTED_MESSAGE=unknown scenario key"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_cli_failure.cmake")
+
+    add_test(NAME installed_package_consumer COMMAND ${CMAKE_COMMAND}
+        "-DPROJECT_BINARY_DIR=${CMAKE_BINARY_DIR}"
+        "-DPACKAGE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/package_consumer"
+        "-DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/package-consumer-smoke"
+        "-DCONFIG=$<CONFIG>"
+        "-DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_consumer_smoke.cmake")
 endif()
 
 install(TARGETS black_hole_models

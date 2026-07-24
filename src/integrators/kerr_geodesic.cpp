@@ -38,6 +38,23 @@ void validate_integration_control(const KerrIntegrationControl& control) {
     }
 }
 
+double finite_or_throw(const double value, const char* message) {
+    if (!std::isfinite(value)) {
+        throw std::overflow_error(message);
+    }
+    return value;
+}
+
+double horizon_root_fraction(const double mass, const double spin_length) {
+    const double ratio = std::abs(spin_length) / mass;
+    return std::sqrt(std::max(0.0, 1.0 - ratio * ratio));
+}
+
+double horizon_event_radius(const double horizon) {
+    return finite_or_throw(horizon * (1.0 + horizon_event_relative_tolerance),
+                           "Kerr horizon event radius overflowed");
+}
+
 double radial_p(const KerrOrbit& orbit, const double radius) {
     return orbit.energy * (radius * radius + orbit.spin_length * orbit.spin_length) -
            orbit.spin_length * orbit.angular_momentum;
@@ -104,7 +121,7 @@ TrajectoryPoint horizon_event_point(const TrajectoryPoint& state, const Derivati
 
 DerivativeEvaluation derivative(const KerrOrbit& orbit, const TrajectoryPoint& state) {
     const double horizon = kerr_outer_horizon(orbit.black_hole_mass, orbit.spin_length);
-    const double horizon_event = horizon * (1.0 + horizon_event_relative_tolerance);
+    const double horizon_event = horizon_event_radius(horizon);
     if (!std::isfinite(state.affine_parameter) || !std::isfinite(state.radius) ||
         !std::isfinite(state.phi) || !std::isfinite(state.coordinate_time) ||
         state.radius <= horizon_event) {
@@ -243,7 +260,7 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
     validate_integration_control(control);
 
     const double horizon = kerr_outer_horizon(orbit.black_hole_mass, orbit.spin_length);
-    const double horizon_event = horizon * (1.0 + horizon_event_relative_tolerance);
+    const double horizon_event = horizon_event_radius(horizon);
     if (!std::isfinite(initial_radius) || !std::isfinite(maximum_step) ||
         initial_radius <= horizon_event || maximum_step <= 0.0 || max_steps == 0) {
         throw std::invalid_argument("invalid Kerr integration parameters");
@@ -403,12 +420,14 @@ double kerr_spin_length(const double mass, const double dimensionless_spin) {
 
 double kerr_inner_horizon(const double mass, const double spin_length) {
     validate_geometry(mass, spin_length);
-    return mass - std::sqrt(mass * mass - spin_length * spin_length);
+    return finite_or_throw(mass * (1.0 - horizon_root_fraction(mass, spin_length)),
+                           "Kerr inner horizon overflowed");
 }
 
 double kerr_outer_horizon(const double mass, const double spin_length) {
     validate_geometry(mass, spin_length);
-    return mass + std::sqrt(mass * mass - spin_length * spin_length);
+    return finite_or_throw(mass * (1.0 + horizon_root_fraction(mass, spin_length)),
+                           "Kerr outer horizon overflowed");
 }
 
 double kerr_static_limit_radius(const double mass, const double spin_length,
@@ -417,17 +436,19 @@ double kerr_static_limit_radius(const double mass, const double spin_length,
     if (!std::isfinite(polar_angle_radians)) {
         throw std::invalid_argument("polar angle must be finite");
     }
-    const double cosine = std::cos(polar_angle_radians);
-    return mass + std::sqrt(mass * mass - spin_length * spin_length * cosine * cosine);
+    const double ratio = (spin_length / mass) * std::cos(polar_angle_radians);
+    const double static_limit = mass * (1.0 + std::sqrt(std::max(0.0, 1.0 - ratio * ratio)));
+    return finite_or_throw(static_limit, "Kerr static limit overflowed");
 }
 
 bool kerr_is_within_equatorial_ergosphere(const double mass, const double spin_length,
-                                          const double radius) {
+                                           const double radius) {
     validate_geometry(mass, spin_length);
     if (!std::isfinite(radius)) {
         throw std::invalid_argument("radius must be finite");
     }
-    return radius > kerr_outer_horizon(mass, spin_length) && radius < 2.0 * mass;
+    const double static_limit = finite_or_throw(2.0 * mass, "Kerr equatorial static limit overflowed");
+    return radius > kerr_outer_horizon(mass, spin_length) && radius < static_limit;
 }
 
 double kerr_delta(const double mass, const double spin_length, const double radius) {
@@ -435,14 +456,16 @@ double kerr_delta(const double mass, const double spin_length, const double radi
     if (!std::isfinite(radius)) {
         throw std::invalid_argument("radius must be finite");
     }
-    return radius * radius - 2.0 * mass * radius + spin_length * spin_length;
+    return finite_or_throw(
+        radius * radius - 2.0 * mass * radius + spin_length * spin_length,
+        "Kerr delta overflowed");
 }
 
 double kerr_equatorial_sigma(const double radius) {
     if (!std::isfinite(radius) || radius <= 0.0) {
         throw std::invalid_argument("equatorial sigma requires a finite positive radius");
     }
-    return radius * radius;
+    return finite_or_throw(radius * radius, "Kerr equatorial sigma overflowed");
 }
 
 double kerr_radial_potential(const KerrOrbit& orbit, const double radius) {
@@ -453,8 +476,10 @@ double kerr_radial_potential(const KerrOrbit& orbit, const double radius) {
     const double delta = kerr_delta(orbit.black_hole_mass, orbit.spin_length, radius);
     const double p = radial_p(orbit, radius);
     const double offset = angular_offset(orbit);
-    return p * p - delta * (orbit.rest_mass * orbit.rest_mass * radius * radius +
-                            offset * offset + orbit.carter_constant);
+    return finite_or_throw(
+        p * p - delta * (orbit.rest_mass * orbit.rest_mass * radius * radius +
+                         offset * offset + orbit.carter_constant),
+        "Kerr radial potential overflowed");
 }
 
 KerrFourMomentum kerr_equatorial_four_momentum(const KerrOrbit& orbit,
@@ -472,12 +497,18 @@ KerrFourMomentum kerr_equatorial_four_momentum(const KerrOrbit& orbit,
     }
     const double p = radial_p(orbit, radius);
     const double offset = angular_offset(orbit);
-    return {(orbit.spin_length * offset +
-             (radius * radius + orbit.spin_length * orbit.spin_length) * p / delta) /
-                sigma,
-            static_cast<double>(orbit.radial_direction) *
-                std::sqrt(std::max(0.0, potential)) / sigma,
-            (offset + orbit.spin_length * p / delta) / sigma};
+    const KerrFourMomentum momentum{
+        (orbit.spin_length * offset +
+         (radius * radius + orbit.spin_length * orbit.spin_length) * p / delta) /
+            sigma,
+        static_cast<double>(orbit.radial_direction) *
+            std::sqrt(std::max(0.0, potential)) / sigma,
+        (offset + orbit.spin_length * p / delta) / sigma};
+    if (!std::isfinite(momentum.coordinate_time) || !std::isfinite(momentum.radial) ||
+        !std::isfinite(momentum.azimuth)) {
+        throw std::overflow_error("Kerr four-momentum overflowed");
+    }
+    return momentum;
 }
 
 Trajectory integrate_kerr(const KerrOrbit& orbit, const double initial_radius,

@@ -46,7 +46,27 @@ LocalMomentum scale(const LocalMomentum& value, const double factor) {
 }
 
 double max_component_abs(const LocalMomentum& value) {
+    if (!std::isfinite(value.time) || !std::isfinite(value.radial) ||
+        !std::isfinite(value.azimuth)) {
+        return std::numeric_limits<double>::infinity();
+    }
     return std::max({std::abs(value.time), std::abs(value.radial), std::abs(value.azimuth)});
+}
+
+double max_component_abs(const KerrFourMomentum& value) {
+    if (!std::isfinite(value.coordinate_time) || !std::isfinite(value.radial) ||
+        !std::isfinite(value.azimuth)) {
+        return std::numeric_limits<double>::infinity();
+    }
+    return std::max(
+        {std::abs(value.coordinate_time), std::abs(value.radial), std::abs(value.azimuth)});
+}
+
+double normalized_residual(const double residual, const double scale) {
+    if (!std::isfinite(residual) || !std::isfinite(scale)) {
+        return std::numeric_limits<double>::infinity();
+    }
+    return std::abs(residual) / std::max(1.0, std::abs(scale));
 }
 
 double spacelike_norm(const LocalMomentum& value) {
@@ -67,14 +87,21 @@ void validate_scenario(const EquatorialPenroseScenario& scenario) {
         !std::isfinite(scenario.incoming_specific_energy) ||
         !std::isfinite(scenario.initial_radius_over_m) ||
         !std::isfinite(scenario.escape_radius_over_m) ||
-        !std::isfinite(scenario.integration_step) || !std::isfinite(scenario.residual_tolerance) ||
+        !std::isfinite(scenario.integration_step) ||
+        !std::isfinite(scenario.integration_control.absolute_tolerance) ||
+        !std::isfinite(scenario.integration_control.relative_tolerance) ||
+        !std::isfinite(scenario.integration_control.minimum_step) ||
+        !std::isfinite(scenario.residual_tolerance) ||
         scenario.black_hole_mass <= 0.0 ||
         scenario.dimensionless_spin < 0.0 || scenario.dimensionless_spin >= 1.0 ||
         scenario.parent_rest_mass <= 0.0 || scenario.fragment_rest_mass < 0.0 ||
-        2.0 * scenario.fragment_rest_mass > scenario.parent_rest_mass ||
+        scenario.fragment_rest_mass > scenario.parent_rest_mass / 2.0 ||
         scenario.incoming_specific_energy <= 0.0 || scenario.initial_radius_over_m <= 0.0 ||
         scenario.escape_radius_over_m <= scenario.initial_radius_over_m ||
         scenario.integration_step <= 0.0 || scenario.max_integration_steps == 0 ||
+        scenario.integration_control.absolute_tolerance <= 0.0 ||
+        scenario.integration_control.relative_tolerance <= 0.0 ||
+        scenario.integration_control.minimum_step < 0.0 ||
         scenario.residual_tolerance <= 0.0) {
         throw std::invalid_argument("invalid equatorial Penrose scenario");
     }
@@ -241,7 +268,7 @@ PenroseEventResult evaluate_equatorial_penrose_event(
                                  scenario.parent_rest_mass, -1};
         result.incoming_trajectory = integrate_kerr_to_radius(
             incoming, initial_radius, split_radius, scenario.integration_step,
-            scenario.max_integration_steps);
+            scenario.max_integration_steps, scenario.integration_control);
         if (result.incoming_trajectory.termination != TrajectoryTermination::reached_target_radius) {
             result.status = failed_integration_status(result.incoming_trajectory);
             return result;
@@ -254,7 +281,12 @@ PenroseEventResult evaluate_equatorial_penrose_event(
         const double incoming_mass_shell =
             std::abs(minkowski_dot(incoming_local, incoming_local) +
                      scenario.parent_rest_mass * scenario.parent_rest_mass);
-        if (incoming_local.time <= 0.0 || incoming_mass_shell > scenario.residual_tolerance) {
+        result.maximum_normalized_residual = std::max(
+            result.maximum_normalized_residual,
+            normalized_residual(incoming_mass_shell,
+                                scenario.parent_rest_mass * scenario.parent_rest_mass));
+        if (incoming_local.time <= 0.0 ||
+            result.maximum_normalized_residual > scenario.residual_tolerance) {
             result.status = PenroseEventStatus::physics_invalid;
             result.mass_shell_residual = incoming_mass_shell;
             return result;
@@ -290,9 +322,15 @@ PenroseEventResult evaluate_equatorial_penrose_event(
                      scenario.fragment_rest_mass * scenario.fragment_rest_mass),
             std::abs(minkowski_dot(second_local, second_local) +
                      scenario.fragment_rest_mass * scenario.fragment_rest_mass));
+        result.maximum_normalized_residual = std::max(
+            result.maximum_normalized_residual,
+            normalized_residual(result.four_momentum_residual, max_component_abs(incoming_local)));
+        result.maximum_normalized_residual = std::max(
+            result.maximum_normalized_residual,
+            normalized_residual(result.mass_shell_residual,
+                                scenario.parent_rest_mass * scenario.parent_rest_mass));
         if (first_local.time <= 0.0 || second_local.time <= 0.0 ||
-            result.four_momentum_residual > scenario.residual_tolerance ||
-            result.mass_shell_residual > scenario.residual_tolerance) {
+            result.maximum_normalized_residual > scenario.residual_tolerance) {
             result.status = PenroseEventStatus::physics_invalid;
             return result;
         }
@@ -316,9 +354,18 @@ PenroseEventResult evaluate_equatorial_penrose_event(
             coordinate_mass_shell_residual(mass, spin_length, split_radius, second_coordinate,
                                            scenario.fragment_rest_mass));
         result.mass_shell_residual = std::max(result.mass_shell_residual, coordinate_mass_shell);
-        if (result.energy_conservation_residual > scenario.residual_tolerance ||
-            result.angular_momentum_conservation_residual > scenario.residual_tolerance ||
-            result.mass_shell_residual > scenario.residual_tolerance) {
+        result.maximum_normalized_residual = std::max(
+            result.maximum_normalized_residual,
+            normalized_residual(result.energy_conservation_residual, input_energy));
+        result.maximum_normalized_residual = std::max(
+            result.maximum_normalized_residual,
+            normalized_residual(result.angular_momentum_conservation_residual,
+                                input_angular_momentum));
+        result.maximum_normalized_residual = std::max(
+            result.maximum_normalized_residual,
+            normalized_residual(coordinate_mass_shell,
+                                scenario.fragment_rest_mass * scenario.fragment_rest_mass));
+        if (result.maximum_normalized_residual > scenario.residual_tolerance) {
             result.status = PenroseEventStatus::physics_invalid;
             return result;
         }
@@ -336,7 +383,12 @@ PenroseEventResult evaluate_equatorial_penrose_event(
         result.geodesic_initialization_residual = std::max(
             coordinate_momentum_difference(first_coordinate, first_reconstructed),
             coordinate_momentum_difference(second_coordinate, second_reconstructed));
-        if (result.geodesic_initialization_residual > scenario.residual_tolerance) {
+        result.maximum_normalized_residual = std::max(
+            result.maximum_normalized_residual,
+            normalized_residual(
+                result.geodesic_initialization_residual,
+                std::max(max_component_abs(first_coordinate), max_component_abs(second_coordinate))));
+        if (result.maximum_normalized_residual > scenario.residual_tolerance) {
             result.status = PenroseEventStatus::physics_invalid;
             return result;
         }
@@ -366,10 +418,10 @@ PenroseEventResult evaluate_equatorial_penrose_event(
                                            scenario.fragment_rest_mass, 1};
             result.captured_trajectory = integrate_kerr(
                 captured_orbit, split_radius, scenario.integration_step,
-                scenario.max_integration_steps, escape_radius);
+                scenario.max_integration_steps, escape_radius, scenario.integration_control);
             result.escaping_trajectory = integrate_kerr(
                 escaping_orbit, split_radius, scenario.integration_step,
-                scenario.max_integration_steps, escape_radius);
+                scenario.max_integration_steps, escape_radius, scenario.integration_control);
             result.captured_energy = captured.constants.energy;
             result.escaping_energy = escaping.constants.energy;
             if (result.captured_trajectory.termination != TrajectoryTermination::crossed_horizon ||
@@ -395,6 +447,9 @@ PenroseEventResult evaluate_equatorial_penrose_event(
         result.status = PenroseEventStatus::captured_or_non_escaping;
         return result;
     } catch (const std::invalid_argument&) {
+        result.status = PenroseEventStatus::physics_invalid;
+        return result;
+    } catch (const std::overflow_error&) {
         result.status = PenroseEventStatus::physics_invalid;
         return result;
     }
