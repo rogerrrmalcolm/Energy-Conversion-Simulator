@@ -99,6 +99,18 @@ RotationalEnergyResult rotational_energy(const RotationalEnergyInput& input) {
 }
 RotationalEnergyRangeResult rotational_energy_range(
     const RotationalEnergyRangeInput& input) {
-        
+        validate_mass(input.mass_kg);
+        validate_spin_range(input.dimensionless_spin);
+        const auto lower = rotational_energy(
+    input.mass_kg.lower_kg, input.dimensionless_spin.lower);
+
+    const auto central = rotational_energy(
+    input.mass_kg.central_kg, input.dimensionless_spin.central);
+
+    const auto upper = rotational_energy(
+    input.mass_kg.upper_kg, input.dimensionless_spin.upper);
+    
+        return {lower, central, upper};
+
 }
 }
