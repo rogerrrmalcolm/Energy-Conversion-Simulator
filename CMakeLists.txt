@@ -42,6 +42,30 @@ if(BH_BUILD_TESTS)
     target_link_libraries(model_tests PRIVATE bh::models)
     target_compile_definitions(model_tests PRIVATE BH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME model_tests COMMAND model_tests)
+
+    add_test(NAME cli_help COMMAND black_hole_demo --help)
+    set_tests_properties(cli_help PROPERTIES
+        PASS_REGULAR_EXPRESSION "Usage:")
+
+    add_test(NAME cli_algebraic COMMAND black_hole_demo --algebraic 1.98847e31 0.9)
+    set_tests_properties(cli_algebraic PROPERTIES
+        PASS_REGULAR_EXPRESSION "rotational reservoir:")
+
+    add_test(NAME cli_algebraic_range COMMAND black_hole_demo --algebraic-range
+        1.590776e31 1.98847e31 2.386164e31 0.8 0.9 0.99)
+    set_tests_properties(cli_algebraic_range PROPERTIES
+        PASS_REGULAR_EXPRESSION "upper uncertainty:")
+
+    add_test(NAME cli_penrose_reference COMMAND black_hole_demo --scenario
+        "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/equatorial_penrose_reference.cfg")
+    set_tests_properties(cli_penrose_reference PROPERTIES
+        PASS_REGULAR_EXPRESSION "status: physically_feasible")
+
+    add_test(NAME cli_invalid_penrose_scenario COMMAND ${CMAKE_COMMAND}
+        "-DEXECUTABLE=$<TARGET_FILE:black_hole_demo>"
+        "-DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/invalid_penrose_unknown_key.cfg"
+        "-DEXPECTED_MESSAGE=unknown scenario key"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_cli_failure.cmake")
 endif()
 
 install(TARGETS black_hole_models

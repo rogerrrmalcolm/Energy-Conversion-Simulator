@@ -1,5 +1,6 @@
 #include "bh/schwarzschild_geodesic.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -21,6 +22,19 @@ TrajectoryPoint shifted(const TrajectoryPoint& s, const Derivative& d, double h)
     return {s.affine_parameter + h, s.radius + h*d.r, s.phi + h*d.phi,
             s.coordinate_time + h*d.t, s.radial_velocity + h*d.ur};
 }
+
+TrajectoryPoint interpolate_event(const TrajectoryPoint& start, const TrajectoryPoint& end,
+                                  const double boundary) {
+    const double denominator = end.radius - start.radius;
+    const double fraction = denominator == 0.0
+                                ? 0.0
+                                : std::clamp((boundary - start.radius) / denominator, 0.0, 1.0);
+    return {start.affine_parameter + fraction * (end.affine_parameter - start.affine_parameter),
+            boundary,
+            start.phi + fraction * (end.phi - start.phi),
+            start.coordinate_time + fraction * (end.coordinate_time - start.coordinate_time),
+            start.radial_velocity + fraction * (end.radial_velocity - start.radial_velocity)};
+}
 }
 
 Trajectory integrate_schwarzschild(const SchwarzschildOrbit& o, const TrajectoryPoint& initial,
@@ -28,14 +42,19 @@ Trajectory integrate_schwarzschild(const SchwarzschildOrbit& o, const Trajectory
                                    const double escape_radius) {
     if (!std::isfinite(o.black_hole_mass) || !std::isfinite(o.specific_energy) ||
         !std::isfinite(o.specific_angular_momentum) || !std::isfinite(initial.radius) ||
-        !std::isfinite(initial.radial_velocity) || !std::isfinite(h) ||
+        !std::isfinite(initial.affine_parameter) || !std::isfinite(initial.phi) ||
+        !std::isfinite(initial.coordinate_time) || !std::isfinite(initial.radial_velocity) ||
+        !std::isfinite(h) ||
         !std::isfinite(escape_radius) || o.black_hole_mass <= 0.0 || h <= 0.0 ||
-        initial.radius <= 2.0*o.black_hole_mass || escape_radius <= 2.0*o.black_hole_mass) {
+        max_steps == 0 || initial.radius <= 2.0*o.black_hole_mass ||
+        escape_radius <= initial.radius) {
         throw std::invalid_argument("invalid Schwarzschild integration parameters");
     }
     Trajectory out;
     out.points.reserve(max_steps + 1);
     out.points.push_back(initial);
+    out.diagnostics.final_step = h;
+    const double horizon_event = 2.0 * o.black_hole_mass * (1.0 + 1e-6);
     for (std::size_t i = 0; i < max_steps; ++i) {
         const auto& s = out.points.back();
         const auto k1 = derivative(o, s);
@@ -51,15 +70,20 @@ Trajectory integrate_schwarzschild(const SchwarzschildOrbit& o, const Trajectory
             out.termination = TrajectoryTermination::invalid_state;
             break;
         }
-        out.points.push_back(next);
-        if (next.radius <= 2.0*o.black_hole_mass * (1.0 + 1e-6)) {
+        if (next.radius <= horizon_event) {
+            out.points.push_back(interpolate_event(s, next, horizon_event));
+            ++out.diagnostics.accepted_steps;
             out.termination = TrajectoryTermination::crossed_horizon;
             break;
         }
         if (next.radius >= escape_radius) {
+            out.points.push_back(interpolate_event(s, next, escape_radius));
+            ++out.diagnostics.accepted_steps;
             out.termination = TrajectoryTermination::reached_escape_radius;
             break;
         }
+        out.points.push_back(next);
+        ++out.diagnostics.accepted_steps;
     }
     return out;
 }

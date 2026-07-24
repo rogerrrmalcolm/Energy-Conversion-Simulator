@@ -6,6 +6,7 @@
 #include "bh/plasma_model.hpp"
 #include "bh/schwarzschild_geodesic.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
@@ -21,6 +22,12 @@ void check(bool condition, const char* message) {
 
 void near(double actual, double expected, double tolerance, const char* message) {
     check(std::abs(actual-expected) <= tolerance, message);
+}
+
+void near_relative(double actual, double expected, double relative_tolerance,
+                   const char* message) {
+    const double scale = std::max({1.0, std::abs(actual), std::abs(expected)});
+    check(std::abs(actual - expected) <= relative_tolerance * scale, message);
 }
 }
 
@@ -44,6 +51,23 @@ int main() {
           "upper spin bound produces upper rotational reservoir");
     check(uncertain.d_rotational_energy_d_spin_joules > 0.0,
           "rotational reservoir sensitivity to spin is positive");
+    const double finite_difference_step = 1.0e-6;
+    const double finite_difference = (
+        bh::rotational_energy(bh::solar_mass_kg, 0.9 + finite_difference_step)
+            .rotational_energy_joules -
+        bh::rotational_energy(bh::solar_mass_kg, 0.9 - finite_difference_step)
+            .rotational_energy_joules) /
+        (2.0 * finite_difference_step);
+    near_relative(uncertain.d_rotational_energy_d_spin_joules, finite_difference, 1.0e-8,
+                  "analytic rotational-energy sensitivity matches a finite difference");
+
+    bool roundoff_rejected = false;
+    try {
+        (void)bh::rotational_energy(
+            {1.0, 0.9, {0.8, std::nextafter(0.9, 1.0), 0.99}});
+    } catch (const std::invalid_argument&) { roundoff_rejected = true; }
+    check(!roundoff_rejected,
+          "spin uncertainty accepts a central value within floating-point roundoff");
 
     const auto ranged = bh::rotational_energy_range(
         {{8.0 * bh::solar_mass_kg, 10.0 * bh::solar_mass_kg, 12.0 * bh::solar_mass_kg},
@@ -111,6 +135,28 @@ int main() {
     near(momentum.azimuth, 0.02, 1e-14,
          "Schwarzschild limit preserves conventional positive azimuthal momentum");
 
+    const bh::KerrOrbit radial_infall{1.0, 0.0, 1.0, 0.0, 1.0, -1};
+    const bh::KerrIntegrationControl strict_control{1.0e-10, 1.0e-10, 0.0};
+    const auto analytic_infall = bh::integrate_kerr_to_radius(
+        radial_infall, 10.0, 8.0, 0.5, 100'000, strict_control);
+    const double expected_infall_affine_parameter =
+        2.0 * (std::pow(10.0, 1.5) - std::pow(8.0, 1.5)) / (3.0 * std::sqrt(2.0));
+    check(analytic_infall.termination == bh::TrajectoryTermination::reached_target_radius,
+          "adaptive radial Kerr infall reaches its target radius");
+    near_relative(analytic_infall.points.back().affine_parameter,
+                  expected_infall_affine_parameter, 1.0e-7,
+                  "adaptive Kerr infall matches the analytic Schwarzschild proper time");
+    check(analytic_infall.diagnostics.accepted_steps > 0 &&
+              analytic_infall.diagnostics.maximum_normalized_error <= 1.0,
+          "adaptive Kerr diagnostics report an accepted bounded-error solution");
+
+    rejected = false;
+    try {
+        (void)bh::integrate_kerr_to_radius(
+            radial_infall, 10.0, 8.0, 0.5, 100, {0.0, 1.0e-9, 0.0});
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "Kerr integration rejects invalid error-control settings");
+
     const auto penrose = bh::evaluate_equatorial_penrose_event(
         {1.0, 0.999, 1.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, 1e-7},
         {1.10, 2.07, -2.0});
@@ -149,6 +195,22 @@ int main() {
         bh::evaluate_equatorial_penrose_event(loaded_event.scenario, loaded_event.split);
     check(loaded_penrose.status == bh::PenroseEventStatus::physically_feasible,
           "versioned reference scenario evaluates as physically feasible");
+
+    rejected = false;
+    try {
+        (void)bh::load_equatorial_penrose_event_input(
+            std::filesystem::path(BH_SOURCE_DIR) / "tests" / "data" /
+            "invalid_penrose_unknown_key.cfg");
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "scenario loader rejects unknown keys");
+
+    rejected = false;
+    try {
+        (void)bh::load_equatorial_penrose_event_input(
+            std::filesystem::path(BH_SOURCE_DIR) / "tests" / "data" /
+            "invalid_penrose_duplicate_key.cfg");
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "scenario loader rejects duplicate keys");
 
     const auto weak = bh::estimate_plasma_extraction({0.0, 1.0, 10.0, 0.9, 2.0});
     near(weak.idealized_extracted_energy_joules, 0.0, 0.0, "zero field produces zero toy extraction");

@@ -10,6 +10,7 @@ namespace bh {
 namespace {
 constexpr double potential_tolerance = 1.0e-12;
 constexpr double horizon_event_relative_tolerance = 1.0e-6;
+constexpr double adaptation_safety = 0.9;
 
 void validate_geometry(const double mass, const double spin_length) {
     if (!std::isfinite(mass) || !std::isfinite(spin_length) || mass <= 0.0 ||
@@ -28,6 +29,15 @@ void validate_orbit(const KerrOrbit& orbit) {
     }
 }
 
+void validate_integration_control(const KerrIntegrationControl& control) {
+    if (!std::isfinite(control.absolute_tolerance) ||
+        !std::isfinite(control.relative_tolerance) ||
+        !std::isfinite(control.minimum_step) || control.absolute_tolerance <= 0.0 ||
+        control.relative_tolerance <= 0.0 || control.minimum_step < 0.0) {
+        throw std::invalid_argument("invalid Kerr integration control");
+    }
+}
+
 double radial_p(const KerrOrbit& orbit, const double radius) {
     return orbit.energy * (radius * radius + orbit.spin_length * orbit.spin_length) -
            orbit.spin_length * orbit.angular_momentum;
@@ -43,59 +53,210 @@ struct Derivative {
     double coordinate_time{};
 };
 
+enum class EvaluationStatus {
+    valid,
+    turning_point,
+    invalid
+};
+
+struct DerivativeEvaluation {
+    EvaluationStatus status{EvaluationStatus::invalid};
+    Derivative value{};
+};
+
+struct StepResult {
+    EvaluationStatus status{EvaluationStatus::invalid};
+    TrajectoryPoint next{};
+};
+
 bool crosses(const double start, const double end, const double boundary, const int direction) {
     return direction > 0 ? start < boundary && end >= boundary
                          : start > boundary && end <= boundary;
 }
 
-TrajectoryPoint event_point(const TrajectoryPoint& state, const Derivative& derivative,
-                            const double step, const double boundary) {
-    const double projected_radius = state.radius + step * derivative.radial;
-    const double denominator = projected_radius - state.radius;
-    const double fraction = denominator == 0.0
-                                ? 0.0
-                                : std::clamp((boundary - state.radius) / denominator, 0.0, 1.0);
-    const double event_step = fraction * step;
-    return {state.affine_parameter + event_step,
-            boundary,
-            state.phi + event_step * derivative.azimuth,
-            state.coordinate_time + event_step * derivative.coordinate_time,
+TrajectoryPoint advance(const TrajectoryPoint& state, const Derivative& derivative,
+                        const double step) {
+    return {state.affine_parameter + step,
+            state.radius + step * derivative.radial,
+            state.phi + step * derivative.azimuth,
+            state.coordinate_time + step * derivative.coordinate_time,
             derivative.radial};
 }
 
-std::optional<Derivative> derivative(const KerrOrbit& orbit, const TrajectoryPoint& state) {
+TrajectoryPoint interpolate_event(const TrajectoryPoint& start, const TrajectoryPoint& end,
+                                  const double boundary) {
+    const double denominator = end.radius - start.radius;
+    const double fraction = denominator == 0.0
+                                ? 0.0
+                                : std::clamp((boundary - start.radius) / denominator, 0.0, 1.0);
+    return {start.affine_parameter + fraction * (end.affine_parameter - start.affine_parameter),
+            boundary,
+            start.phi + fraction * (end.phi - start.phi),
+            start.coordinate_time + fraction * (end.coordinate_time - start.coordinate_time),
+            start.radial_velocity + fraction * (end.radial_velocity - start.radial_velocity)};
+}
+
+TrajectoryPoint horizon_event_point(const TrajectoryPoint& state, const Derivative& derivative,
+                                    const double step, const double horizon_event) {
+    const TrajectoryPoint projected = advance(state, derivative, step);
+    return interpolate_event(state, projected, horizon_event);
+}
+
+DerivativeEvaluation derivative(const KerrOrbit& orbit, const TrajectoryPoint& state) {
     const double horizon = kerr_outer_horizon(orbit.black_hole_mass, orbit.spin_length);
     const double horizon_event = horizon * (1.0 + horizon_event_relative_tolerance);
-    if (!std::isfinite(state.radius) || state.radius <= horizon_event) {
-        return std::nullopt;
+    if (!std::isfinite(state.affine_parameter) || !std::isfinite(state.radius) ||
+        !std::isfinite(state.phi) || !std::isfinite(state.coordinate_time) ||
+        state.radius <= horizon_event) {
+        return {};
     }
 
     const double potential = kerr_radial_potential(orbit, state.radius);
     if (potential < -potential_tolerance) {
-        return std::nullopt;
+        return {};
     }
     if (potential <= potential_tolerance) {
-        return Derivative{};
+        return {EvaluationStatus::turning_point, {}};
     }
 
-    const auto momentum = kerr_equatorial_four_momentum(orbit, state.radius);
-    return Derivative{momentum.radial, momentum.azimuth, momentum.coordinate_time};
+    const KerrFourMomentum momentum = kerr_equatorial_four_momentum(orbit, state.radius);
+    if (!std::isfinite(momentum.radial) || !std::isfinite(momentum.azimuth) ||
+        !std::isfinite(momentum.coordinate_time)) {
+        return {};
+    }
+    return {EvaluationStatus::valid,
+            {momentum.radial, momentum.azimuth, momentum.coordinate_time}};
+}
+
+StepResult rk4_step(const KerrOrbit& orbit, const TrajectoryPoint& state, const double step) {
+    const DerivativeEvaluation k1 = derivative(orbit, state);
+    if (k1.status != EvaluationStatus::valid) {
+        return {k1.status, {}};
+    }
+    const DerivativeEvaluation k2 = derivative(orbit, advance(state, k1.value, step / 2.0));
+    if (k2.status != EvaluationStatus::valid) {
+        return {k2.status, {}};
+    }
+    const DerivativeEvaluation k3 = derivative(orbit, advance(state, k2.value, step / 2.0));
+    if (k3.status != EvaluationStatus::valid) {
+        return {k3.status, {}};
+    }
+    const DerivativeEvaluation k4 = derivative(orbit, advance(state, k3.value, step));
+    if (k4.status != EvaluationStatus::valid) {
+        return {k4.status, {}};
+    }
+
+    const Derivative average{
+        (k1.value.radial + 2.0 * k2.value.radial + 2.0 * k3.value.radial +
+         k4.value.radial) /
+            6.0,
+        (k1.value.azimuth + 2.0 * k2.value.azimuth + 2.0 * k3.value.azimuth +
+         k4.value.azimuth) /
+            6.0,
+        (k1.value.coordinate_time + 2.0 * k2.value.coordinate_time +
+         2.0 * k3.value.coordinate_time + k4.value.coordinate_time) /
+            6.0};
+    const TrajectoryPoint next = advance(state, average, step);
+    if (!std::isfinite(next.radius) || !std::isfinite(next.phi) ||
+        !std::isfinite(next.coordinate_time)) {
+        return {};
+    }
+    return {EvaluationStatus::valid, next};
+}
+
+std::optional<TrajectoryPoint> locate_radius_event(const KerrOrbit& orbit,
+                                                    const TrajectoryPoint& state,
+                                                    const double step,
+                                                    const double boundary,
+                                                    const int direction) {
+    double lower_step = 0.0;
+    double upper_step = step;
+    TrajectoryPoint event;
+    bool found = false;
+
+    for (int iteration = 0; iteration < 48; ++iteration) {
+        const double midpoint_step = (lower_step + upper_step) / 2.0;
+        const StepResult midpoint = rk4_step(orbit, state, midpoint_step);
+        if (midpoint.status != EvaluationStatus::valid) {
+            return std::nullopt;
+        }
+        if (crosses(state.radius, midpoint.next.radius, boundary, direction)) {
+            upper_step = midpoint_step;
+            event = midpoint.next;
+            found = true;
+        } else {
+            lower_step = midpoint_step;
+        }
+    }
+
+    if (!found) {
+        return std::nullopt;
+    }
+    event.radius = boundary;
+    const DerivativeEvaluation event_derivative = derivative(orbit, event);
+    if (event_derivative.status == EvaluationStatus::valid) {
+        event.radial_velocity = event_derivative.value.radial;
+    }
+    return event;
+}
+
+double normalized_component_error(const double left, const double right,
+                                  const KerrIntegrationControl& control) {
+    const double scale = control.absolute_tolerance +
+                         control.relative_tolerance * std::max(std::abs(left), std::abs(right));
+    return std::abs(left - right) / scale;
+}
+
+double normalized_rk4_error(const TrajectoryPoint& full_step,
+                            const TrajectoryPoint& two_half_steps,
+                            const KerrIntegrationControl& control) {
+    // Step doubling estimates an RK4 local error; the 15 accounts for 2^4 - 1.
+    return std::max(
+        {normalized_component_error(full_step.radius, two_half_steps.radius, control) / 15.0,
+         normalized_component_error(full_step.phi, two_half_steps.phi, control) / 15.0});
+}
+
+double next_step_size(const double current_step, const double normalized_error,
+                      const bool accepted, const double maximum_step) {
+    if (normalized_error == 0.0) {
+        return accepted ? maximum_step : current_step / 2.0;
+    }
+    const double raw_factor = adaptation_safety * std::pow(1.0 / normalized_error, 0.2);
+    const double lower = accepted ? 0.2 : 0.1;
+    const double upper = accepted ? 5.0 : 0.5;
+    return std::min(maximum_step,
+                    current_step * std::clamp(raw_factor, lower, upper));
+}
+
+double automatic_minimum_step(const double maximum_step, const double initial_radius) {
+    const double scale = std::max({1.0, std::abs(maximum_step), std::abs(initial_radius)});
+    return std::max(maximum_step * 1.0e-10,
+                    32.0 * std::numeric_limits<double>::epsilon() * scale);
 }
 
 Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radius,
-                               const double step, const std::size_t max_steps,
+                               const double maximum_step, const std::size_t max_steps,
                                const std::optional<double> escape_radius,
-                               const std::optional<double> target_radius) {
+                               const std::optional<double> target_radius,
+                               const KerrIntegrationControl& control) {
     validate_orbit(orbit);
+    validate_integration_control(control);
+
     const double horizon = kerr_outer_horizon(orbit.black_hole_mass, orbit.spin_length);
     const double horizon_event = horizon * (1.0 + horizon_event_relative_tolerance);
-    if (!std::isfinite(initial_radius) || !std::isfinite(step) || initial_radius <= horizon_event ||
-        step <= 0.0) {
+    if (!std::isfinite(initial_radius) || !std::isfinite(maximum_step) ||
+        initial_radius <= horizon_event || maximum_step <= 0.0 || max_steps == 0) {
         throw std::invalid_argument("invalid Kerr integration parameters");
     }
+    const double minimum_step = control.minimum_step == 0.0
+                                    ? automatic_minimum_step(maximum_step, initial_radius)
+                                    : control.minimum_step;
+    if (minimum_step > maximum_step) {
+        throw std::invalid_argument("Kerr minimum step cannot exceed the maximum step");
+    }
     if (escape_radius.has_value() &&
-        (!std::isfinite(*escape_radius) || *escape_radius <= horizon_event)) {
-        throw std::invalid_argument("escape radius must be finite and outside the horizon");
+        (!std::isfinite(*escape_radius) || *escape_radius <= initial_radius)) {
+        throw std::invalid_argument("escape radius must be finite and greater than the initial radius");
     }
     if (target_radius.has_value()) {
         if (!std::isfinite(*target_radius) || *target_radius <= horizon_event ||
@@ -106,107 +267,128 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
 
     Trajectory out;
     out.points.reserve(max_steps + 1);
-    out.points.push_back({0.0, initial_radius, 0.0, 0.0, 0.0});
+    out.diagnostics.final_step = maximum_step;
+    TrajectoryPoint initial{0.0, initial_radius, 0.0, 0.0, 0.0};
+    const DerivativeEvaluation initial_derivative = derivative(orbit, initial);
+    if (initial_derivative.status == EvaluationStatus::turning_point) {
+        out.points.push_back(initial);
+        out.termination = TrajectoryTermination::turning_point;
+        return out;
+    }
+    if (initial_derivative.status != EvaluationStatus::valid) {
+        out.points.push_back(initial);
+        out.termination = TrajectoryTermination::invalid_state;
+        return out;
+    }
+    initial.radial_velocity = initial_derivative.value.radial;
+    out.points.push_back(initial);
 
-    for (std::size_t i = 0; i < max_steps; ++i) {
-        const TrajectoryPoint state = out.points.back();
-        const auto k1 = derivative(orbit, state);
-        if (!k1.has_value()) {
+    double step = maximum_step;
+    std::size_t attempts = 0;
+    const std::size_t max_attempts =
+        max_steps > std::numeric_limits<std::size_t>::max() / 16
+            ? std::numeric_limits<std::size_t>::max()
+            : max_steps * 16;
+
+    while (out.diagnostics.accepted_steps < max_steps) {
+        if (attempts++ >= max_attempts) {
             out.termination = TrajectoryTermination::invalid_state;
             break;
         }
-        if (k1->radial == 0.0) {
+
+        const TrajectoryPoint state = out.points.back();
+        const DerivativeEvaluation k1 = derivative(orbit, state);
+        if (k1.status == EvaluationStatus::turning_point) {
             out.termination = TrajectoryTermination::turning_point;
             break;
         }
+        if (k1.status != EvaluationStatus::valid) {
+            out.termination = TrajectoryTermination::invalid_state;
+            break;
+        }
 
-        const double predicted_radius = state.radius + step * k1->radial;
-        if (orbit.radial_direction < 0 && crosses(state.radius, predicted_radius, horizon_event,
-                                                  orbit.radial_direction)) {
-            out.points.push_back(event_point(state, *k1, step, horizon_event));
+        const double projected_radius = state.radius + step * k1.value.radial;
+        if (orbit.radial_direction < 0 &&
+            crosses(state.radius, projected_radius, horizon_event, orbit.radial_direction)) {
+            out.points.push_back(horizon_event_point(state, k1.value, step, horizon_event));
+            ++out.diagnostics.accepted_steps;
             out.termination = TrajectoryTermination::crossed_horizon;
             break;
         }
-        if (target_radius.has_value() &&
-            crosses(state.radius, predicted_radius, *target_radius, orbit.radial_direction)) {
-            out.points.push_back(event_point(state, *k1, step, *target_radius));
-            out.termination = TrajectoryTermination::reached_target_radius;
-            break;
-        }
-        if (escape_radius.has_value() && orbit.radial_direction > 0 &&
-            crosses(state.radius, predicted_radius, *escape_radius, orbit.radial_direction)) {
-            out.points.push_back(event_point(state, *k1, step, *escape_radius));
-            out.termination = TrajectoryTermination::reached_escape_radius;
-            break;
+
+        const StepResult full_step = rk4_step(orbit, state, step);
+        const StepResult first_half_step = rk4_step(orbit, state, step / 2.0);
+        StepResult second_half_step;
+        if (first_half_step.status == EvaluationStatus::valid) {
+            second_half_step = rk4_step(orbit, first_half_step.next, step / 2.0);
+        } else {
+            second_half_step.status = first_half_step.status;
         }
 
-        const auto midpoint_one = TrajectoryPoint{state.affine_parameter + step / 2.0,
-                                                  state.radius + step * k1->radial / 2.0,
-                                                  state.phi + step * k1->azimuth / 2.0,
-                                                  state.coordinate_time + step * k1->coordinate_time / 2.0,
-                                                  k1->radial};
-        const auto k2 = derivative(orbit, midpoint_one);
-        if (!k2.has_value()) {
-            out.termination = TrajectoryTermination::invalid_state;
+        if (full_step.status == EvaluationStatus::turning_point ||
+            first_half_step.status == EvaluationStatus::turning_point ||
+            second_half_step.status == EvaluationStatus::turning_point) {
+            out.termination = TrajectoryTermination::turning_point;
             break;
         }
-        const auto midpoint_two = TrajectoryPoint{state.affine_parameter + step / 2.0,
-                                                  state.radius + step * k2->radial / 2.0,
-                                                  state.phi + step * k2->azimuth / 2.0,
-                                                  state.coordinate_time + step * k2->coordinate_time / 2.0,
-                                                  k2->radial};
-        const auto k3 = derivative(orbit, midpoint_two);
-        if (!k3.has_value()) {
-            out.termination = TrajectoryTermination::invalid_state;
-            break;
-        }
-        const auto endpoint = TrajectoryPoint{state.affine_parameter + step,
-                                              state.radius + step * k3->radial,
-                                              state.phi + step * k3->azimuth,
-                                              state.coordinate_time + step * k3->coordinate_time,
-                                              k3->radial};
-        const auto k4 = derivative(orbit, endpoint);
-        if (!k4.has_value()) {
-            out.termination = TrajectoryTermination::invalid_state;
-            break;
+        if (full_step.status != EvaluationStatus::valid ||
+            first_half_step.status != EvaluationStatus::valid ||
+            second_half_step.status != EvaluationStatus::valid) {
+            if (step <= minimum_step) {
+                out.termination = TrajectoryTermination::invalid_state;
+                break;
+            }
+            step = std::max(minimum_step, step / 2.0);
+            ++out.diagnostics.rejected_steps;
+            continue;
         }
 
-        const Derivative average{
-            (k1->radial + 2.0 * k2->radial + 2.0 * k3->radial + k4->radial) / 6.0,
-            (k1->azimuth + 2.0 * k2->azimuth + 2.0 * k3->azimuth + k4->azimuth) / 6.0,
-            (k1->coordinate_time + 2.0 * k2->coordinate_time + 2.0 * k3->coordinate_time +
-             k4->coordinate_time) /
-                6.0};
-        TrajectoryPoint next{state.affine_parameter + step,
-                             state.radius + step * average.radial,
-                             state.phi + step * average.azimuth,
-                             state.coordinate_time + step * average.coordinate_time,
-                             average.radial};
-        if (!std::isfinite(next.radius) || !std::isfinite(next.phi) ||
-            !std::isfinite(next.coordinate_time)) {
+        const double error = normalized_rk4_error(full_step.next, second_half_step.next, control);
+        if (!std::isfinite(error)) {
             out.termination = TrajectoryTermination::invalid_state;
             break;
         }
-        out.points.push_back(next);
-
-        if (orbit.radial_direction < 0 && next.radius <= horizon_event) {
-            out.points.back().radius = horizon_event;
-            out.termination = TrajectoryTermination::crossed_horizon;
-            break;
+        if (error > 1.0) {
+            if (step <= minimum_step) {
+                out.termination = TrajectoryTermination::invalid_state;
+                break;
+            }
+            step = std::max(minimum_step, next_step_size(step, error, false, maximum_step));
+            ++out.diagnostics.rejected_steps;
+            continue;
         }
+
+        const TrajectoryPoint next = second_half_step.next;
+        out.diagnostics.maximum_normalized_error =
+            std::max(out.diagnostics.maximum_normalized_error, error);
+        ++out.diagnostics.accepted_steps;
+
         if (target_radius.has_value() &&
             crosses(state.radius, next.radius, *target_radius, orbit.radial_direction)) {
-            out.points.back().radius = *target_radius;
+            const auto event = locate_radius_event(orbit, state, step, *target_radius,
+                                                   orbit.radial_direction);
+            out.points.push_back(event.has_value()
+                                     ? *event
+                                     : interpolate_event(state, next, *target_radius));
             out.termination = TrajectoryTermination::reached_target_radius;
             break;
         }
         if (escape_radius.has_value() && orbit.radial_direction > 0 &&
-            next.radius >= *escape_radius) {
-            out.points.back().radius = *escape_radius;
+            crosses(state.radius, next.radius, *escape_radius, orbit.radial_direction)) {
+            const auto event = locate_radius_event(orbit, state, step, *escape_radius,
+                                                   orbit.radial_direction);
+            out.points.push_back(event.has_value()
+                                     ? *event
+                                     : interpolate_event(state, next, *escape_radius));
             out.termination = TrajectoryTermination::reached_escape_radius;
             break;
         }
+
+        out.points.push_back(next);
+        step = std::max(minimum_step, next_step_size(step, error, true, maximum_step));
     }
+
+    out.diagnostics.final_step = step;
     return out;
 }
 }  // namespace
@@ -257,8 +439,8 @@ double kerr_delta(const double mass, const double spin_length, const double radi
 }
 
 double kerr_equatorial_sigma(const double radius) {
-    if (!std::isfinite(radius)) {
-        throw std::invalid_argument("radius must be finite");
+    if (!std::isfinite(radius) || radius <= 0.0) {
+        throw std::invalid_argument("equatorial sigma requires a finite positive radius");
     }
     return radius * radius;
 }
@@ -290,8 +472,8 @@ KerrFourMomentum kerr_equatorial_four_momentum(const KerrOrbit& orbit,
     }
     const double p = radial_p(orbit, radius);
     const double offset = angular_offset(orbit);
-    return {(orbit.spin_length * offset + (radius * radius + orbit.spin_length * orbit.spin_length) *
-                                          p / delta) /
+    return {(orbit.spin_length * offset +
+             (radius * radius + orbit.spin_length * orbit.spin_length) * p / delta) /
                 sigma,
             static_cast<double>(orbit.radial_direction) *
                 std::sqrt(std::max(0.0, potential)) / sigma,
@@ -300,15 +482,17 @@ KerrFourMomentum kerr_equatorial_four_momentum(const KerrOrbit& orbit,
 
 Trajectory integrate_kerr(const KerrOrbit& orbit, const double initial_radius,
                           const double step, const std::size_t max_steps,
-                          const double escape_radius) {
+                          const double escape_radius,
+                          const KerrIntegrationControl& control) {
     return integrate_kerr_impl(orbit, initial_radius, step, max_steps, escape_radius,
-                               std::nullopt);
+                               std::nullopt, control);
 }
 
 Trajectory integrate_kerr_to_radius(const KerrOrbit& orbit, const double initial_radius,
                                     const double target_radius, const double step,
-                                    const std::size_t max_steps) {
+                                    const std::size_t max_steps,
+                                    const KerrIntegrationControl& control) {
     return integrate_kerr_impl(orbit, initial_radius, step, max_steps, std::nullopt,
-                               target_radius);
+                               target_radius, control);
 }
 }  // namespace bh

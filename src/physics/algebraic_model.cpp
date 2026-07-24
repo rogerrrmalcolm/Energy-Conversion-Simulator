@@ -1,7 +1,9 @@
 #include "bh/algebraic_model.hpp"
 #include "bh/constants.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace bh {
@@ -52,6 +54,12 @@ void validate_spin_range(const SpinRange& range) {
     }
 }
 
+bool nearly_equal(const double left, const double right) {
+    const double scale = std::max({1.0, std::abs(left), std::abs(right)});
+    return std::abs(left - right) <=
+           16.0 * std::numeric_limits<double>::epsilon() * scale;
+}
+
 double rotational_sensitivity_fraction_per_spin(const double spin) {
     if (spin == 0.0) {
         return 0.0;
@@ -80,7 +88,7 @@ RotationalEnergyResult rotational_energy(const RotationalEnergyInput& input) {
     validate_mass(input.mass_kg);
     validate_spin(input.dimensionless_spin);
     validate_spin_range(input.spin_uncertainty);
-    if (input.spin_uncertainty.central != input.dimensionless_spin) {
+    if (!nearly_equal(input.spin_uncertainty.central, input.dimensionless_spin)) {
         throw std::invalid_argument("spin uncertainty central value must match dimensionless_spin");
     }
 

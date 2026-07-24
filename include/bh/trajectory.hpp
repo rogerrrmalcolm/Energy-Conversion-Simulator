@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
 namespace bh {
@@ -20,8 +21,16 @@ enum class TrajectoryTermination {
     invalid_state
 };
 
+struct IntegrationDiagnostics {
+    std::size_t accepted_steps{};
+    std::size_t rejected_steps{};
+    double maximum_normalized_error{};
+    double final_step{};
+};
+
 struct Trajectory {
     std::vector<TrajectoryPoint> points;
     TrajectoryTermination termination{TrajectoryTermination::completed};
+    IntegrationDiagnostics diagnostics{};
 };
 }

@@ -22,6 +22,16 @@ struct KerrFourMomentum {
     double azimuth{};          // p^phi = dphi/dlambda
 };
 
+struct KerrIntegrationControl {
+    // Error scales are applied to r and phi. Boyer-Lindquist t is reported but
+    // excluded because it is coordinate-singular at the horizon; dr/dlambda is
+    // derived directly from the radial potential at each state.
+    double absolute_tolerance{1.0e-10};
+    double relative_tolerance{1.0e-9};
+    // A value of zero derives a lower bound from the requested maximum step.
+    double minimum_step{0.0};
+};
+
 [[nodiscard]] double kerr_spin_length(double mass, double dimensionless_spin);
 [[nodiscard]] double kerr_inner_horizon(double mass, double spin_length);
 [[nodiscard]] double kerr_outer_horizon(double mass, double spin_length);
@@ -36,10 +46,12 @@ struct KerrFourMomentum {
                                                                double radius);
 [[nodiscard]] Trajectory integrate_kerr(const KerrOrbit& orbit, double initial_radius,
                                         double step, std::size_t max_steps,
-                                        double escape_radius);
+                                        double escape_radius,
+                                        const KerrIntegrationControl& control = {});
 [[nodiscard]] Trajectory integrate_kerr_to_radius(const KerrOrbit& orbit,
                                                    double initial_radius,
                                                    double target_radius,
                                                    double step,
-                                                   std::size_t max_steps);
+                                                   std::size_t max_steps,
+                                                   const KerrIntegrationControl& control = {});
 }

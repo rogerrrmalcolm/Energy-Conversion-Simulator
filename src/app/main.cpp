@@ -40,6 +40,17 @@ std::string_view termination_name(const bh::TrajectoryTermination termination) {
     return "unknown";
 }
 
+void print_integration_diagnostics(const std::string_view label,
+                                   const bh::Trajectory& trajectory) {
+    std::cout << "  " << label << " accepted/rejected: "
+              << trajectory.diagnostics.accepted_steps << "/"
+              << trajectory.diagnostics.rejected_steps << "\n"
+              << "  " << label << " max error: "
+              << trajectory.diagnostics.maximum_normalized_error << "\n"
+              << "  " << label << " final step: "
+              << trajectory.diagnostics.final_step << "\n";
+}
+
 void print_usage(const std::string_view program_name) {
     std::cout << "Usage:\n"
               << "  " << program_name << " --algebraic <mass_kg> <a_star>\n"
@@ -126,7 +137,11 @@ void run_penrose_event(const int argc, char* argv[]) {
               << termination_name(result.captured_trajectory.termination) << "\n"
               << "  escaping trajectory:     "
               << termination_name(result.escaping_trajectory.termination) << "\n\n"
-              << "This is an idealized event calculation, not a measurement of extracted"
+              << "Integration diagnostics\n";
+    print_integration_diagnostics("incoming", result.incoming_trajectory);
+    print_integration_diagnostics("captured", result.captured_trajectory);
+    print_integration_diagnostics("escaping", result.escaping_trajectory);
+    std::cout << "\nThis is an idealized event calculation, not a measurement of extracted"
                  " astrophysical energy or a delivery model.\n";
 }
 }  // namespace
