@@ -11,7 +11,14 @@ struct TrajectoryPoint {
     double radial_velocity{};
 };
 
-enum class TrajectoryTermination { completed, crossed_horizon, reached_escape_radius, invalid_state };
+enum class TrajectoryTermination {
+    completed,
+    crossed_horizon,
+    reached_escape_radius,
+    reached_target_radius,
+    turning_point,
+    invalid_state
+};
 
 struct Trajectory {
     std::vector<TrajectoryPoint> points;

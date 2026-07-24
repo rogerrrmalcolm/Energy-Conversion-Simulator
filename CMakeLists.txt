@@ -13,6 +13,8 @@ option(BH_BUILD_TESTS "Build the black-hole model tests" ON)
 
 add_library(black_hole_models
     src/physics/algebraic_model.cpp
+    src/physics/penrose_model.cpp
+    src/io/penrose_scenario_io.cpp
     src/integrators/schwarzschild_geodesic.cpp
     src/integrators/kerr_geodesic.cpp
     src/physics/plasma_model.cpp)
@@ -38,6 +40,7 @@ if(BH_BUILD_TESTS)
     enable_testing()
     add_executable(model_tests tests/model_tests.cpp)
     target_link_libraries(model_tests PRIVATE bh::models)
+    target_compile_definitions(model_tests PRIVATE BH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME model_tests COMMAND model_tests)
 endif()
 
@@ -48,6 +51,8 @@ install(TARGETS black_hole_models
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY scenarios/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/black_hole_energy_simulation/scenarios)
 install(EXPORT BlackHoleModelsTargets
     FILE BlackHoleModelsTargets.cmake
     NAMESPACE bh::

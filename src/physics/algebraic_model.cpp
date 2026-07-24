@@ -22,7 +22,7 @@ void validate_mass(const MassRange& mass) {
     }
 
     if (mass.lower_kg <= 0.0 ||
-        mass.central_kg <= 0.0 || // the mass of a black hole must be greater than or equal to one another, if not there is no spin or error
+        mass.central_kg <= 0.0 ||
         mass.upper_kg <= 0.0) {
         throw std::invalid_argument("mass values must be positive");
     }
@@ -45,9 +45,9 @@ void validate_mass(const double mass_kg) {
 
 void validate_spin_range(const SpinRange& range) {
     validate_spin(range.lower);
-    validate_spin(range.central); //what it meant was to take in those specific parameters and pass the range values to a different function that does the validating
+    validate_spin(range.central);
     validate_spin(range.upper);
-    if (range.lower > range.central || range.central > range.upper) { //if invalid clause
+    if (range.lower > range.central || range.central > range.upper) {
         throw std::invalid_argument("spin uncertainty must satisfy lower <= central <= upper");
     }
 }
@@ -99,18 +99,20 @@ RotationalEnergyResult rotational_energy(const RotationalEnergyInput& input) {
 }
 RotationalEnergyRangeResult rotational_energy_range(
     const RotationalEnergyRangeInput& input) {
-        validate_mass(input.mass_kg);
-        validate_spin_range(input.dimensionless_spin);
-        const auto lower = rotational_energy(
-    input.mass_kg.lower_kg, input.dimensionless_spin.lower);
+    validate_mass(input.mass);
+    validate_spin_range(input.spin);
 
+    const auto lower = rotational_energy(
+        input.mass.lower_kg, input.spin.lower);
     const auto central = rotational_energy(
-    input.mass_kg.central_kg, input.dimensionless_spin.central);
-
+        input.mass.central_kg, input.spin.central);
     const auto upper = rotational_energy(
-    input.mass_kg.upper_kg, input.dimensionless_spin.upper);
-    
-        return {lower, central, upper};
+        input.mass.upper_kg, input.spin.upper);
 
+    return {lower,
+            central,
+            upper,
+            central.rotational_energy_joules - lower.rotational_energy_joules,
+            upper.rotational_energy_joules - central.rotational_energy_joules};
 }
 }

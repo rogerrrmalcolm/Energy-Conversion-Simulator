@@ -1,10 +1,13 @@
 #include "bh/algebraic_model.hpp"
 #include "bh/constants.hpp"
 #include "bh/kerr_geodesic.hpp"
+#include "bh/penrose_model.hpp"
+#include "bh/penrose_scenario_io.hpp"
 #include "bh/plasma_model.hpp"
 #include "bh/schwarzschild_geodesic.hpp"
 
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -30,6 +33,8 @@ int main() {
     const auto near_extremal = bh::rotational_energy(1.0, 0.999999999);
     near(near_extremal.rotational_fraction, 1.0-1.0/std::sqrt(2.0), 3.0e-5,
          "near-extremal reservoir approaches 29.29 percent");
+    near(bh::classical_penrose_efficiency_limit(), (std::sqrt(2.0) - 1.0) / 2.0, 1e-15,
+         "classical ideal Penrose efficiency limit is approximately 20.71 percent");
 
     const auto uncertain = bh::rotational_energy(
         {bh::solar_mass_kg, 0.9, {0.8, 0.9, 0.99}});
@@ -47,6 +52,14 @@ int main() {
           "lower mass and spin give lower rotational reservoir");
     check(ranged.central.rotational_energy_joules < ranged.upper.rotational_energy_joules,
           "upper mass and spin give upper rotational reservoir");
+    near(ranged.rotational_energy_uncertainty_minus_joules,
+         ranged.central.rotational_energy_joules - ranged.lower.rotational_energy_joules,
+         0.0,
+         "range reports lower asymmetric uncertainty");
+    near(ranged.rotational_energy_uncertainty_plus_joules,
+         ranged.upper.rotational_energy_joules - ranged.central.rotational_energy_joules,
+         0.0,
+         "range reports upper asymmetric uncertainty");
 
     bool rejected = false;
     try { (void)bh::rotational_energy(1.0, 1.0); } catch (const std::invalid_argument&) { rejected = true; }
@@ -73,11 +86,69 @@ int main() {
 
     near(bh::kerr_outer_horizon(1.0, 0.0), 2.0, 1e-14,
          "Kerr horizon reduces to Schwarzschild horizon");
+    near(bh::kerr_spin_length(2.0, 0.9), 1.8, 1e-14,
+         "dimensionless spin converts to Kerr spin length");
+    near(bh::kerr_static_limit_radius(1.0, 0.5, 1.57079632679489661923), 2.0, 1e-14,
+         "equatorial Kerr static limit is 2M");
+    near(bh::kerr_static_limit_radius(1.0, 0.5, 0.0), bh::kerr_outer_horizon(1.0, 0.5),
+         1e-14, "Kerr static limit meets horizon at the pole");
+    check(bh::kerr_is_within_equatorial_ergosphere(1.0, 0.5, 1.9),
+          "equatorial point between horizon and static limit is in ergosphere");
     const bh::KerrOrbit outward{1.0, 0.5, 1.0, 0.0, 1.0, 1};
     check(bh::kerr_radial_potential(outward, 10.0) >= 0.0, "Kerr test orbit is admissible");
     const auto escaping = bh::integrate_kerr(outward, 10.0, 0.01, 10'000, 11.0);
     check(escaping.termination == bh::TrajectoryTermination::reached_escape_radius,
           "outward Kerr trajectory reaches escape radius");
+    const auto target = bh::integrate_kerr_to_radius(outward, 10.0, 10.5, 0.01, 10'000);
+    check(target.termination == bh::TrajectoryTermination::reached_target_radius,
+          "outward Kerr trajectory reaches requested target radius");
+    const bh::KerrOrbit inward{1.0, 0.5, 1.0, 0.0, 1.0, -1};
+    const auto captured = bh::integrate_kerr(inward, 3.0, 0.001, 50'000, 20.0);
+    check(captured.termination == bh::TrajectoryTermination::crossed_horizon,
+          "inward Kerr trajectory crosses horizon");
+    const bh::KerrOrbit azimuth_check{1.0, 0.0, 1.0, 2.0, 1.0, 1};
+    const auto momentum = bh::kerr_equatorial_four_momentum(azimuth_check, 10.0);
+    near(momentum.azimuth, 0.02, 1e-14,
+         "Schwarzschild limit preserves conventional positive azimuthal momentum");
+
+    const auto penrose = bh::evaluate_equatorial_penrose_event(
+        {1.0, 0.999, 1.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, 1e-7},
+        {1.10, 2.07, -2.0});
+    if (penrose.status != bh::PenroseEventStatus::physically_feasible) {
+        std::cerr << "Penrose evaluator status: "
+                  << bh::penrose_event_status_name(penrose.status) << '\n';
+    }
+    check(penrose.status == bh::PenroseEventStatus::physically_feasible,
+          "reference equatorial split is physically feasible");
+    check(penrose.four_momentum_residual <= 1e-7,
+          "reference split conserves local four-momentum");
+    check(penrose.mass_shell_residual <= 1e-7,
+          "reference split satisfies fragment mass shells");
+    check(penrose.geodesic_initialization_residual <= 1e-7,
+          "reference fragments reconstruct from their Kerr conserved quantities");
+    check(penrose.captured_trajectory.termination == bh::TrajectoryTermination::crossed_horizon,
+          "negative-energy reference fragment crosses horizon");
+    check(penrose.escaping_trajectory.termination ==
+              bh::TrajectoryTermination::reached_escape_radius,
+          "positive-energy reference fragment reaches configured escape radius");
+    check(penrose.extracted_energy > 0.0 && penrose.eta_penrose > 0.0,
+          "reference event reports positive net extracted energy");
+    const auto outside_ergosphere = bh::evaluate_equatorial_penrose_event(
+        {1.0, 0.999, 1.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, 1e-7},
+        {2.1, 2.07, -2.0});
+    check(outside_ergosphere.status == bh::PenroseEventStatus::outside_ergosphere,
+          "split outside the equatorial ergosphere is rejected");
+
+    const auto loaded_event = bh::load_equatorial_penrose_event_input(
+        std::filesystem::path(BH_SOURCE_DIR) / "scenarios" / "equatorial_penrose_reference.cfg");
+    near(loaded_event.scenario.dimensionless_spin, 0.999, 0.0,
+         "scenario loader preserves the declared spin");
+    near(loaded_event.split.split_radius_over_m, 1.10, 0.0,
+         "scenario loader preserves the declared split radius");
+    const auto loaded_penrose =
+        bh::evaluate_equatorial_penrose_event(loaded_event.scenario, loaded_event.split);
+    check(loaded_penrose.status == bh::PenroseEventStatus::physically_feasible,
+          "versioned reference scenario evaluates as physically feasible");
 
     const auto weak = bh::estimate_plasma_extraction({0.0, 1.0, 10.0, 0.9, 2.0});
     near(weak.idealized_extracted_energy_joules, 0.0, 0.0, "zero field produces zero toy extraction");

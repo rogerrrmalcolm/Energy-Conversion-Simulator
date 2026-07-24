@@ -15,8 +15,6 @@ struct MassRange {
     double upper_kg{};
 };
 
-
-
 struct RotationalEnergyInput {
     double mass_kg{};
     double dimensionless_spin{};
@@ -35,15 +33,16 @@ struct RotationalEnergyResult {
 };
 
 struct RotationalEnergyRangeInput {
-    MassRange mass_kg{};
-    SpinRange dimensionless_spin{}; //the input values for the dimmensional spinrange and whatnot
-    
+    MassRange mass{};
+    SpinRange spin{};
 };
 
 struct RotationalEnergyRangeResult {
     RotationalEnergyResult lower{};
     RotationalEnergyResult central{};
     RotationalEnergyResult upper{};
+    double rotational_energy_uncertainty_minus_joules{};
+    double rotational_energy_uncertainty_plus_joules{};
 };
 
 [[nodiscard]] RotationalEnergyRangeResult rotational_energy_range(

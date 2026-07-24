@@ -1,58 +1,158 @@
-# Black Hole Energy Simulation — First Pass
+# Black Hole Energy Simulation
 
-This C++20 foundation separates four levels of physical modeling so that a cheap reference calculation is never confused with a trajectory proof or a plasma simulation. Trajectories use geometrized units (`G = c = 1`), metric signature `(-,+,+,+)`, Boyer–Lindquist coordinates for Kerr, and distances normalized by black-hole mass `M`; SI values appear only in the algebraic and toy plasma boundaries. No component claims that energy has been extracted from an observed black hole or that astrophysical energy delivery is technologically feasible.
+A C++20 scientific-computing foundation for three separate questions:
 
-## Model reports (three sentences each)
+1. Given a black-hole mass and spin, what is its theoretical rotational-energy reservoir?
+2. Given a declared equatorial Kerr test-particle event, does a local Penrose split conserve four-momentum, capture a negative-energy fragment, and let a positive-energy fragment escape?
+3. Given a clearly labelled toy plasma scenario, how do a few magnetic and density inputs scale a reduced-model energy estimate?
 
-### 1. Algebraic rotational-energy model
+The program does not claim to measure energy extracted from an observed black hole, and it does not claim that delivery of energy to Earth is feasible.
 
-This model converts an observed mass and dimensionless spin into total mass-energy, irreducible mass, and the theoretical Kerr rotational-energy reservoir. It is fast, deterministic, and useful for validating the zero-spin and near-extremal limits, but it does not model a Penrose event or imply that the reservoir can all be recovered. Its central tradeoff is simplicity versus physical detail: one calculation gives a rigorous theoretical bound, while saying nothing about trajectory feasibility, collection, or delivery losses.
+## Current physics
 
-### 2. Schwarzschild geodesic model
+### Algebraic Kerr reservoir
 
-This reference integrator evolves an equatorial timelike test particle around a non-rotating black hole with a fourth-order Runge–Kutta stepper. It establishes understandable orbital behavior and a baseline against which rotating Kerr trajectories can be checked, including the `a -> 0` limit. Its tradeoff is that fixed steps and coordinate time near the horizon are easy to inspect but less robust than adaptive integration and horizon-regular coordinates.
+At the SI boundary, the algebraic model accepts mass in kilograms and a dimensionless Kerr spin named a_star, where 0 <= a_star < 1.
 
-### 3. Kerr geodesic model
+~~~text
+M_irr = M * sqrt((1 + sqrt(1 - a_star^2)) / 2)
+E_mass = M * c^2
+E_rot  = (M - M_irr) * c^2
+~~~
 
-This model evolves an equatorial timelike or null trajectory using the separated Kerr radial potential and conserved energy and axial angular momentum. It exposes frame dragging, the spin-dependent horizon, capture, and escape, which are essential foundations for a later deterministic Penrose split optimizer. This first pass intentionally does not switch direction at radial turning points, integrate off-equatorial motion, or adapt its step size, so it is an educational kernel rather than evidence of a 20.7% feasible event.
+E_rot is the theoretical rotational-energy reservoir, not energy guaranteed to be extracted by one event. The model supports ordered lower, central, and upper mass and spin values. It evaluates the same formula at each bound and reports asymmetric uncertainty relative to the central result.
 
-### 4. Plasma model
+### Equatorial Kerr geodesics
 
-This transparent zero-dimensional model estimates magnetization, relativistic Alfvén speed, Poynting power, and an explicitly heuristic spin-coupling energy. It demonstrates how magnetic field strength, density, area, spin, and duration could enter a continuous electromagnetic extraction ledger without pretending to solve plasma dynamics. Its tradeoff is interpretability versus realism: the outputs are useful scaling scenarios, but a defensible extraction prediction requires general-relativistic magnetohydrodynamics (GRMHD), boundary conditions, field geometry, and numerical convergence studies.
+The trajectory kernel uses geometrized units, G = c = 1, Boyer-Lindquist coordinates, metric signature (-,+,+,+), and the equatorial restriction Q = 0. The user supplies a black-hole mass scale M, a Kerr spin length a = a_star * M, conserved energy E, axial angular momentum L_z, rest mass mu, and an initial radial direction.
 
-## Build and run
+~~~text
+Delta(r) = r^2 - 2*M*r + a^2
+r_plus   = M + sqrt(M^2 - a^2)
 
-```powershell
+P(r) = E*(r^2 + a^2) - a*L_z
+R(r) = P(r)^2 - Delta(r) * (mu^2*r^2 + (L_z - a*E)^2)
+~~~
+
+R(r) >= 0 is required for the radial state to be allowed. The integrator uses a fixed-step RK4 update and returns explicit termination states for a horizon crossing, a configured escape radius, a requested target radius, a turning point, or an invalid state.
+
+### Restricted Penrose event
+
+The event model evaluates one declared split; it does not search or optimize parameters. The split radius must be inside the equatorial ergosphere:
+
+~~~text
+r_plus < r_split < r_static_limit
+r_static_limit = 2*M at the equator
+~~~
+
+At the split, the engine converts the incoming four-momentum into a local ZAMO frame, constructs an idealized neutral two-body split, and checks local four-momentum conservation and both mass-shell constraints. It converts each fragment back to Kerr conserved quantities, then integrates the captured and escaping geodesics separately.
+
+An event is physically feasible in this restricted model only when:
+
+- the captured fragment has negative conserved energy and crosses the horizon;
+- the escaping fragment has positive conserved energy and reaches the configured large escape_radius;
+- four-momentum, mass-shell, energy, angular-momentum, and geodesic-initialization residuals are within the declared tolerance.
+
+The escape radius is separate from the ergosphere boundary. The ergosphere determines where a Penrose split can produce a negative-energy fragment. Escape is confirmed only when the outward fragment reaches the independently configured large radius. The coordinate integrator stops immediately outside the Boyer-Lindquist horizon and records that event as crossed_horizon.
+
+~~~text
+eta_penrose = (E_escape - E_input) / E_input
+E_extracted = max(0, E_escape - E_input)
+~~~
+
+Those event energies are normalized geometrized quantities. They are not joules and are not a claim about an observed astrophysical extraction.
+
+The familiar approximately 20.71 percent classical Penrose efficiency is a restrictive ideal-limit check, not a result this engine claims for an arbitrary event. The reference scenario is deliberately below that limit.
+
+## Run the CLI
+
+Configure and build:
+
+~~~powershell
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
-.\build\black_hole_demo.exe
-```
+~~~
 
-Those commands target single-configuration generators such as Ninja and place the executable directly in `build/`; use `./build/black_hole_demo` in that case. With a multi-configuration generator such as Visual Studio, omit `-DCMAKE_BUILD_TYPE=Release` and pass `--config Release` to the build, test, and install commands.
+Those commands target a single-configuration generator such as Ninja. With a multi-configuration generator such as Visual Studio, omit CMAKE_BUILD_TYPE and add --config Release to the build, test, and install commands.
 
-## Use as a CMake library
+Evaluate an algebraic reservoir:
 
-Install the library into a local prefix:
+~~~powershell
+.\build\black_hole_demo.exe --algebraic 1.98847e31 0.9
+~~~
 
-```powershell
+Evaluate an algebraic mass-and-spin range:
+
+~~~powershell
+.\build\black_hole_demo.exe --algebraic-range 1.590776e31 1.98847e31 2.386164e31 0.8 0.9 0.99
+~~~
+
+Evaluate one explicit Penrose event:
+
+~~~powershell
+.\build\black_hole_demo.exe --scenario .\scenarios\equatorial_penrose_reference.cfg
+~~~
+
+The reference file is a reproducible normalized test-particle case. It is intentionally labelled idealized; it is not an astrophysical observation.
+
+## Scenario file
+
+The scenarios/equatorial_penrose_reference.cfg file is a versioned key = value input. The loader rejects unknown keys, duplicate keys, malformed values, missing keys, and unsupported versions.
+
+~~~text
+scenario_version
+black_hole_mass
+dimensionless_spin
+parent_rest_mass
+fragment_rest_mass
+incoming_specific_energy
+initial_radius_over_m
+escape_radius_over_m
+integration_step
+max_integration_steps
+residual_tolerance
+split_radius_over_m
+incoming_lz_over_m_m
+split_angle_rad
+~~~
+
+All values in this file are normalized geometrized inputs except the dimensionless spin and angle, which is measured in radians.
+
+## Validation
+
+model_tests checks:
+
+- zero-spin and near-extremal algebraic limits;
+- mass and spin range ordering and uncertainty reporting;
+- Kerr horizon and static-limit formulas;
+- allowed radial potential, horizon capture, and configured-radius escape;
+- a local Penrose split with conservation residual checks;
+- rejection of a split outside the ergosphere;
+- loading and executing the versioned reference scenario;
+- toy-plasma input validation and causal Alfven speed.
+
+## Deliberate limits and next work
+
+- Kerr motion is equatorial only, has Q = 0, uses fixed-step RK4, and does not yet continue through radial turning points.
+- The Penrose model is a neutral, idealized two-body test-particle split. It has no charged-particle fields, radiation reaction, backreaction, collision model, nuclear fragmentation model, or GRMHD.
+- The plasma component is a reduced toy model, not MHD or GRMHD.
+- A* parameter search is deliberately not implemented yet. Any future search must call this evaluator for each parameter set and must never be presented as a particle trajectory.
+- Multithreading and SIMD are deliberately deferred until scalar correctness, integration error control, and invariant monitoring are expanded and profiled.
+
+## CMake library
+
+Install the library:
+
+~~~powershell
 cmake --install build --prefix install
-```
+~~~
 
-Then consume it from another CMake project:
+Consume it from another CMake project:
 
-```cmake
+~~~cmake
 find_package(BlackHoleModels 0.1 CONFIG REQUIRED)
 target_link_libraries(your_target PRIVATE bh::models)
-```
+~~~
 
-Configure the consuming project with `-DCMAKE_PREFIX_PATH="<repository>/install"`. The exported target supplies the public include directory and C++20 requirement automatically.
-
-## Current numerical boundaries
-
-- The Schwarzschild implementation is equatorial, timelike, fixed-step RK4 and stops just outside the coordinate-singular horizon.
-- The Kerr implementation is equatorial (`Q=0`), uses a fixed radial direction and first-order stepping, and rejects a forbidden radial potential rather than locating a turning point.
-- Both trajectory implementations use test particles and ignore radiation reaction and backreaction on the black hole.
-- The plasma model is a scenario calculator, not particle-in-cell, MHD, or GRMHD software.
-
-The next correctness milestone is adaptive error control plus invariant monitoring, followed by a hand-constructed momentum-conserving split with one captured negative-energy fragment and one verified escaping fragment.
+Set CMAKE_PREFIX_PATH to the local install prefix when configuring the consuming project.
