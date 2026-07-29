@@ -73,6 +73,7 @@ struct Derivative {
 enum class EvaluationStatus {
     valid,
     turning_point,
+    forbidden_radial_region,
     invalid
 };
 
@@ -85,6 +86,11 @@ struct StepResult {
     EvaluationStatus status{EvaluationStatus::invalid};
     TrajectoryPoint next{};
 };
+
+bool is_radial_boundary(const EvaluationStatus status) {
+    return status == EvaluationStatus::turning_point ||
+           status == EvaluationStatus::forbidden_radial_region;
+}
 
 bool crosses(const double start, const double end, const double boundary, const int direction) {
     return direction > 0 ? start < boundary && end >= boundary
@@ -119,6 +125,58 @@ TrajectoryPoint horizon_event_point(const TrajectoryPoint& state, const Derivati
     return interpolate_event(state, projected, horizon_event);
 }
 
+std::optional<double> locate_turning_radius(const KerrOrbit& orbit,
+                                            const double start_radius,
+                                            const double end_radius) {
+    if (!std::isfinite(start_radius) || !std::isfinite(end_radius) ||
+        start_radius <= 0.0 || end_radius <= 0.0 || start_radius == end_radius) {
+        return std::nullopt;
+    }
+
+    if (kerr_radial_potential(orbit, start_radius) <= potential_tolerance) {
+        return start_radius;
+    }
+
+    // Sampling first catches a forbidden band even when R becomes positive again
+    // before the horizon. Bisection then localizes the first R(r) = 0 boundary.
+    constexpr int sample_count = 64;
+    double allowed_radius = start_radius;
+    for (int sample = 1; sample <= sample_count; ++sample) {
+        const double fraction = static_cast<double>(sample) / sample_count;
+        const double candidate_radius =
+            start_radius + fraction * (end_radius - start_radius);
+        if (kerr_radial_potential(orbit, candidate_radius) > potential_tolerance) {
+            allowed_radius = candidate_radius;
+            continue;
+        }
+
+        double blocked_radius = candidate_radius;
+        for (int iteration = 0; iteration < 64; ++iteration) {
+            const double midpoint_radius = (allowed_radius + blocked_radius) / 2.0;
+            if (kerr_radial_potential(orbit, midpoint_radius) > potential_tolerance) {
+                allowed_radius = midpoint_radius;
+            } else {
+                blocked_radius = midpoint_radius;
+            }
+        }
+        return (allowed_radius + blocked_radius) / 2.0;
+    }
+    return std::nullopt;
+}
+
+std::optional<TrajectoryPoint> locate_turning_point(const KerrOrbit& orbit,
+                                                     const TrajectoryPoint& state,
+                                                     const TrajectoryPoint& probe) {
+    const auto radius = locate_turning_radius(orbit, state.radius, probe.radius);
+    if (!radius.has_value()) {
+        return std::nullopt;
+    }
+
+    TrajectoryPoint event = interpolate_event(state, probe, *radius);
+    event.radial_velocity = 0.0;
+    return event;
+}
+
 DerivativeEvaluation derivative(const KerrOrbit& orbit, const TrajectoryPoint& state) {
     const double horizon = kerr_outer_horizon(orbit.black_hole_mass, orbit.spin_length);
     const double horizon_event = horizon_event_radius(horizon);
@@ -130,7 +188,7 @@ DerivativeEvaluation derivative(const KerrOrbit& orbit, const TrajectoryPoint& s
 
     const double potential = kerr_radial_potential(orbit, state.radius);
     if (potential < -potential_tolerance) {
-        return {};
+        return {EvaluationStatus::forbidden_radial_region, {}};
     }
     if (potential <= potential_tolerance) {
         return {EvaluationStatus::turning_point, {}};
@@ -288,6 +346,7 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
     TrajectoryPoint initial{0.0, initial_radius, 0.0, 0.0, 0.0};
     const DerivativeEvaluation initial_derivative = derivative(orbit, initial);
     if (initial_derivative.status == EvaluationStatus::turning_point) {
+        initial.radial_velocity = 0.0;
         out.points.push_back(initial);
         out.termination = TrajectoryTermination::turning_point;
         return out;
@@ -316,6 +375,7 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
         const TrajectoryPoint state = out.points.back();
         const DerivativeEvaluation k1 = derivative(orbit, state);
         if (k1.status == EvaluationStatus::turning_point) {
+            out.points.back().radial_velocity = 0.0;
             out.termination = TrajectoryTermination::turning_point;
             break;
         }
@@ -327,6 +387,15 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
         const double projected_radius = state.radius + step * k1.value.radial;
         if (orbit.radial_direction < 0 &&
             crosses(state.radius, projected_radius, horizon_event, orbit.radial_direction)) {
+            const TrajectoryPoint horizon_probe =
+                interpolate_event(state, advance(state, k1.value, step), horizon_event);
+            if (const auto turning = locate_turning_point(orbit, state, horizon_probe);
+                turning.has_value()) {
+                out.points.push_back(*turning);
+                ++out.diagnostics.accepted_steps;
+                out.termination = TrajectoryTermination::turning_point;
+                break;
+            }
             out.points.push_back(horizon_event_point(state, k1.value, step, horizon_event));
             ++out.diagnostics.accepted_steps;
             out.termination = TrajectoryTermination::crossed_horizon;
@@ -342,10 +411,22 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
             second_half_step.status = first_half_step.status;
         }
 
-        if (full_step.status == EvaluationStatus::turning_point ||
-            first_half_step.status == EvaluationStatus::turning_point ||
-            second_half_step.status == EvaluationStatus::turning_point) {
-            out.termination = TrajectoryTermination::turning_point;
+        if (is_radial_boundary(full_step.status) || is_radial_boundary(first_half_step.status) ||
+            is_radial_boundary(second_half_step.status)) {
+            if (step > minimum_step) {
+                step = std::max(minimum_step, step / 2.0);
+                ++out.diagnostics.rejected_steps;
+                continue;
+            }
+            const TrajectoryPoint probe = advance(state, k1.value, step);
+            if (const auto turning = locate_turning_point(orbit, state, probe);
+                turning.has_value()) {
+                out.points.push_back(*turning);
+                ++out.diagnostics.accepted_steps;
+                out.termination = TrajectoryTermination::turning_point;
+                break;
+            }
+            out.termination = TrajectoryTermination::invalid_state;
             break;
         }
         if (full_step.status != EvaluationStatus::valid ||

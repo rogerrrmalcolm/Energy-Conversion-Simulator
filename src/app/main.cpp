@@ -49,6 +49,10 @@ void print_integration_diagnostics(const std::string_view label,
               << trajectory.diagnostics.maximum_normalized_error << "\n"
               << "  " << label << " final step: "
               << trajectory.diagnostics.final_step << "\n";
+    if (!trajectory.points.empty()) {
+        std::cout << "  " << label << " terminal radius: "
+                  << trajectory.points.back().radius << " M\n";
+    }
 }
 
 void print_usage(const std::string_view program_name) {

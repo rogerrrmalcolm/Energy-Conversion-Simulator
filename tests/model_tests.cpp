@@ -159,6 +159,23 @@ int main() {
     const auto captured = bh::integrate_kerr(inward, 3.0, 0.001, 50'000, 20.0);
     check(captured.termination == bh::TrajectoryTermination::crossed_horizon,
           "inward Kerr trajectory crosses horizon");
+
+    const double bound_specific_energy = 0.95;
+    const double expected_outer_turning_radius = 2.0 / (1.0 -
+                                                        bound_specific_energy *
+                                                            bound_specific_energy);
+    const bh::KerrOrbit bound_outward{1.0, 0.0, bound_specific_energy, 0.0, 1.0, 1};
+    const auto turning = bh::integrate_kerr(
+        bound_outward, 10.0, 0.05, 100'000, 30.0, {1.0e-9, 1.0e-9, 1.0e-6});
+    check(turning.termination == bh::TrajectoryTermination::turning_point,
+          "outward Kerr trajectory stops at a radial turning point before escape");
+    near_relative(turning.points.back().radius, expected_outer_turning_radius, 1.0e-7,
+                  "Kerr turning-point event localizes the analytic Schwarzschild root");
+    near(turning.points.back().radial_velocity, 0.0, 0.0,
+         "Kerr turning-point event has zero radial velocity");
+    check(turning.diagnostics.rejected_steps > 0,
+          "Kerr integrator refines a step before reporting a turning point");
+
     const bh::KerrOrbit azimuth_check{1.0, 0.0, 1.0, 2.0, 1.0, 1};
     const auto momentum = bh::kerr_equatorial_four_momentum(azimuth_check, 10.0);
     near(momentum.azimuth, 0.02, 1e-14,

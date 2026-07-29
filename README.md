@@ -36,6 +36,8 @@ R(r) = P(r)^2 - Delta(r) * (mu^2*r^2 + (L_z - a*E)^2)
 
 R(r) >= 0 is required for the radial state to be allowed. The integrator uses adaptive RK4 step doubling: it compares one full step with two half steps, accepts the higher-accuracy state only when the normalized radial and azimuthal error is within tolerance, and records accepted/rejected-step diagnostics. Boyer-Lindquist coordinate time is reported but excluded from step control because it becomes coordinate-singular at the horizon. The result returns explicit termination states for a horizon crossing, a configured escape radius, a requested target radius, a turning point, or an invalid state.
 
+A turning point is localized at the first radial-potential root, R(r) = 0, in the selected radial direction. This restricted baseline stops at that event rather than reversing the particle's radial direction: an inward branch that turns before the horizon is not captured, and an outward branch that turns before the configured escape radius is not escaping.
+
 ### Restricted Penrose event
 
 The event model evaluates one declared split; it does not search or optimize parameters. The split radius must be inside the equatorial ergosphere:
