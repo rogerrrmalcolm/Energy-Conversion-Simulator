@@ -66,6 +66,20 @@ Those event energies are normalized geometrized quantities. They are not joules 
 
 The familiar approximately 20.71 percent classical Penrose efficiency is a restrictive ideal-limit check, not a result this engine claims for an arbitrary event. The reference scenario is deliberately below that limit.
 
+### Reduced toy-plasma transport
+
+The plasma component is a transparent 0-D ideal-MHD scaling estimate, not an MHD or GRMHD simulation. Given a magnetic field, mass density, flow area, black-hole spin, and duration, it calculates magnetization, a causal relativistic Alfven speed, raw electromagnetic Poynting power through the declared surface, a visible heuristic spin-coupling factor, and the resulting outward electromagnetic power and energy.
+
+~~~text
+sigma = B^2 / (mu_0 * rho * c^2)
+v_A   = c * sqrt(sigma / (1 + sigma))
+P_EM  = (B^2 / mu_0) * v_A * area
+P_out = P_EM * eta_spin_coupling
+E_out = P_out * duration
+~~~
+
+`E_out` is only the toy model's outward electromagnetic energy through the configured surface. It does not model matter flux, collector capture, conversion, storage, transmission, or usable delivered energy.
+
 ## Run the CLI
 
 Configure and build:
@@ -97,6 +111,32 @@ Evaluate one explicit Penrose event:
 ~~~
 
 The reference file is a reproducible normalized test-particle case. It is intentionally labelled idealized; it is not an astrophysical observation.
+
+Evaluate one reduced toy-plasma transport estimate:
+
+~~~powershell
+.\build\black_hole_demo.exe --toy-plasma 1.0 1e-8 10.0 0.9 2.0
+~~~
+
+The five values are magnetic field in tesla, mass density in kg/m^3, flow area in m^2, dimensionless spin, and duration in seconds.
+
+### Interactive input mode
+
+Run the interactive CLI when you want one in-memory simulation session without preparing a command line or Penrose scenario file:
+
+~~~powershell
+.\build\black_hole_demo.exe --interactive
+~~~
+
+The session asks for black-hole mass in kilograms and dimensionless spin once at startup, then keeps them in memory for every engine. The menu can explicitly update that shared black-hole state, configure shared Kerr integration controls, run the Algebraic reservoir, validate a Kerr trajectory, evaluate a Penrose event, run toy-plasma transport, or end the session.
+
+Kerr and Penrose use the same selected black hole in normalized geometrized coordinates with `M = 1`; radii are entered as `r / M` and Penrose angular momentum as `Lz / (m M)`. This is a coordinate normalization of the shared physical black-hole mass, not a second black-hole input.
+
+The Kerr menu asks only for an orbit's `E`, `Lz`, rest mass, direction, and boundaries. The Penrose menu asks only for the parent/fragment properties and split parameters; it reuses the shared spin and Kerr integration controls, then delegates incoming, capture, and escape path validation to the Kerr integrator. The toy-plasma baseline reuses shared spin; its reduced formula does not use mass.
+
+A future A* layer will keep the black-hole session fixed and vary only `split_radius_over_m`, `incoming_lz_over_m_m`, and `split_angle_rad`. Its goal result must satisfy both a valid Kerr path and the configured Penrose-efficiency target. Every prompt displays a retained default, so rerunning a menu action does not require re-entering unchanged values.
+
+The original argument-based commands and versioned Penrose scenario files remain the reproducible interface for benchmarks and tests.
 
 ## Scenario file
 

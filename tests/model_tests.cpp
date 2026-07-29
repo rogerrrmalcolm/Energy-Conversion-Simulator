@@ -278,12 +278,21 @@ int main() {
     check(rejected, "scenario loader rejects duplicate keys");
 
     const auto weak = bh::estimate_plasma_extraction({0.0, 1.0, 10.0, 0.9, 2.0});
-    near(weak.idealized_extracted_energy_joules, 0.0, 0.0, "zero field produces zero toy extraction");
+    near(weak.outward_electromagnetic_power_watts, 0.0, 0.0,
+         "zero field produces zero toy outward electromagnetic power");
+    near(weak.outward_electromagnetic_energy_joules, 0.0, 0.0,
+         "zero field produces zero toy outward electromagnetic energy");
     const auto plasma = bh::estimate_plasma_extraction({1.0, 1e-8, 10.0, 0.9, 2.0});
     check(plasma.alfven_speed_m_s > 0.0 && plasma.alfven_speed_m_s < bh::speed_of_light_m_s,
           "relativistic Alfven speed is causal");
     check(plasma.spin_coupling_efficiency >= 0.0 && plasma.spin_coupling_efficiency <= 1.0,
           "toy spin coupling is bounded");
+    near_relative(plasma.outward_electromagnetic_power_watts,
+                  plasma.poynting_power_watts * plasma.spin_coupling_efficiency, 1.0e-12,
+                  "toy outward electromagnetic power applies the visible coupling");
+    near_relative(plasma.outward_electromagnetic_energy_joules,
+                  plasma.outward_electromagnetic_power_watts * 2.0, 1.0e-12,
+                  "toy outward electromagnetic energy scales with duration");
 
     rejected = false;
     try {

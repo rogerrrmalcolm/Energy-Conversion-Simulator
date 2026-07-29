@@ -15,7 +15,8 @@ struct PlasmaResult {
     double alfven_speed_m_s{};
     double poynting_power_watts{};
     double spin_coupling_efficiency{};
-    double idealized_extracted_energy_joules{};
+    double outward_electromagnetic_power_watts{};
+    double outward_electromagnetic_energy_joules{};
 };
 
 [[nodiscard]] PlasmaResult estimate_plasma_extraction(const PlasmaInput& input);

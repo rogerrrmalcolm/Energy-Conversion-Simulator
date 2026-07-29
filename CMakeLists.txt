@@ -43,6 +43,14 @@ if(BH_BUILD_TESTS)
     target_compile_definitions(model_tests PRIVATE BH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME model_tests COMMAND model_tests)
 
+    function(add_interactive_cli_test test_name input_file required_messages)
+        add_test(NAME ${test_name} COMMAND ${CMAKE_COMMAND}
+            "-DEXECUTABLE=$<TARGET_FILE:black_hole_demo>"
+            "-DINPUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/${input_file}"
+            "-DREQUIRED_MESSAGES=${required_messages}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_cli_success.cmake")
+    endfunction()
+
     add_test(NAME cli_help COMMAND black_hole_demo --help)
     set_tests_properties(cli_help PROPERTIES
         PASS_REGULAR_EXPRESSION "Usage:")
@@ -55,6 +63,13 @@ if(BH_BUILD_TESTS)
         1.590776e31 1.98847e31 2.386164e31 0.8 0.9 0.99)
     set_tests_properties(cli_algebraic_range PROPERTIES
         PASS_REGULAR_EXPRESSION "upper uncertainty:")
+
+    add_test(NAME cli_toy_plasma COMMAND black_hole_demo --toy-plasma 1.0 1e-8 10.0 0.9 2.0)
+    set_tests_properties(cli_toy_plasma PROPERTIES
+        PASS_REGULAR_EXPRESSION "Reduced toy-plasma transport estimate")
+
+    add_interactive_cli_test(cli_interactive_shared_workflow interactive_shared_workflow.txt
+        "Algebraic Kerr rotational-energy reservoir|Equatorial Kerr trajectory|status: physically_feasible|Reduced toy-plasma transport estimate")
 
     add_test(NAME cli_penrose_reference COMMAND black_hole_demo --scenario
         "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/equatorial_penrose_reference.cfg")
