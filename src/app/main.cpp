@@ -115,6 +115,8 @@ void print_integration_diagnostics(const std::string_view label,
               << trajectory.diagnostics.rejected_steps << "\n"
               << "  " << label << " max error: "
               << trajectory.diagnostics.maximum_normalized_error << "\n"
+              << "  " << label << " max radial residual: "
+              << trajectory.diagnostics.maximum_normalized_radial_residual << "\n"
               << "  " << label << " final step: "
               << trajectory.diagnostics.final_step << "\n";
     if (!trajectory.points.empty()) {
@@ -136,7 +138,7 @@ void print_usage(const std::string_view program_name) {
               << "  " << program_name << " --interactive\n\n"
               << "The scenario command evaluates one declared equatorial Penrose event."
                  " It does not search or optimize parameters.\n"
-              << "The toy-plasma command is a reduced 0-D electromagnetic transport estimate,"
+              << "The toy-plasma command is a reduced, ideal-MHD-inspired transport scaling,"
                  " not an MHD or GRMHD simulation.\n"
               << "The interactive command opens a shared session and retains black-hole state"
                  " across engines.\n";
@@ -164,20 +166,20 @@ void print_algebraic_range_result(const bh::RotationalEnergyRangeResult& result)
 
 void print_toy_plasma_result(const bh::PlasmaResult& result) {
     std::cout << "Reduced toy-plasma transport estimate\n"
-              << "  model: 0-D ideal-MHD scaling, not MHD or GRMHD\n"
+              << "  model: 0-D ideal-MHD-inspired scaling, not an MHD solution or GRMHD\n"
               << "  magnetization sigma:                 " << result.magnetization << "\n"
               << "  relativistic Alfven speed:           " << result.alfven_speed_m_s
               << " m/s\n"
-              << "  raw electromagnetic Poynting power:  " << result.poynting_power_watts
+              << "  raw Poynting-flux scaling:           " << result.poynting_power_watts
               << " W\n"
-              << "  heuristic spin coupling:             "
+              << "  heuristic spin coupling factor:      "
               << result.spin_coupling_efficiency << "\n"
               << "  outward electromagnetic power:       "
               << result.outward_electromagnetic_power_watts << " W\n"
               << "  outward electromagnetic energy:      "
               << result.outward_electromagnetic_energy_joules << " J\n\n"
-              << "This model does not calculate matter flux, collector capture, conversion,"
-                 " storage, transmission, or usable delivered energy.\n";
+              << "Assumes a field perpendicular to representative flow. It does not calculate matter"
+                 " flux, collector capture, conversion, storage, transmission, or usable energy.\n";
 }
 
 void print_penrose_event_result(const bh::EquatorialPenroseScenario& scenario,
@@ -262,7 +264,7 @@ void run_toy_plasma(const int argc, char* argv[]) {
         parse_double(argv[4], "flow_area_m2"),
         parse_double(argv[5], "a_star"),
         parse_double(argv[6], "duration_seconds")};
-    const bh::PlasmaResult result = bh::estimate_plasma_extraction(input);
+    const bh::PlasmaResult result = bh::estimate_toy_plasma_transport(input);
 
     print_toy_plasma_result(result);
 }
@@ -452,7 +454,7 @@ void run_interactive_toy_plasma(InteractiveSession& session) {
                                               input.mass_density_kg_m3);
     input.flow_area_m2 = prompt_double("Flow area [m^2]", input.flow_area_m2);
     input.duration_seconds = prompt_double("Duration [seconds]", input.duration_seconds);
-    print_toy_plasma_result(bh::estimate_plasma_extraction(
+    print_toy_plasma_result(bh::estimate_toy_plasma_transport(
         {input.magnetic_field_tesla, input.mass_density_kg_m3, input.flow_area_m2,
          session.black_hole.dimensionless_spin, input.duration_seconds}));
 }

@@ -436,6 +436,21 @@ PenroseEventResult evaluate_equatorial_penrose_event(
                 return result;
             }
 
+            const double maximum_trajectory_radial_residual = std::max(
+                {result.incoming_trajectory.diagnostics.maximum_normalized_radial_residual,
+                 result.captured_trajectory.diagnostics.maximum_normalized_radial_residual,
+                 result.escaping_trajectory.diagnostics.maximum_normalized_radial_residual});
+            result.maximum_normalized_residual = std::max(
+                result.maximum_normalized_residual, maximum_trajectory_radial_residual);
+            if (!std::isfinite(maximum_trajectory_radial_residual)) {
+                result.status = PenroseEventStatus::integration_failed;
+                return result;
+            }
+            if (result.maximum_normalized_residual > scenario.residual_tolerance) {
+                result.status = PenroseEventStatus::physics_invalid;
+                return result;
+            }
+
             result.eta_penrose =
                 (result.escaping_energy - result.input_energy) / result.input_energy;
             result.extracted_energy =

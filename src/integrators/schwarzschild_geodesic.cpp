@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace bh {
@@ -65,6 +66,30 @@ TrajectoryPoint interpolate_event(const TrajectoryPoint& start, const Trajectory
             start.coordinate_time + fraction * (end.coordinate_time - start.coordinate_time),
             start.radial_velocity + fraction * (end.radial_velocity - start.radial_velocity)};
 }
+
+double normalized_radial_residual(const SchwarzschildOrbit& orbit,
+                                  const TrajectoryPoint& point) {
+    const double potential = schwarzschild_radial_potential(orbit, point.radius);
+    const double velocity_squared = point.radial_velocity * point.radial_velocity;
+    if (!std::isfinite(potential) || !std::isfinite(velocity_squared)) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const double scale = std::max({1.0, std::abs(potential), std::abs(velocity_squared)});
+    return std::abs(velocity_squared - potential) / scale;
+}
+
+void record_radial_residual(Trajectory* trajectory, const SchwarzschildOrbit& orbit,
+                            const TrajectoryPoint& point) {
+    trajectory->diagnostics.maximum_normalized_radial_residual = std::max(
+        trajectory->diagnostics.maximum_normalized_radial_residual,
+        normalized_radial_residual(orbit, point));
+}
+
+double physical_radial_velocity(const SchwarzschildOrbit& orbit, const double radius,
+                                const int direction) {
+    const double potential = schwarzschild_radial_potential(orbit, radius);
+    return static_cast<double>(direction) * std::sqrt(std::max(0.0, potential));
+}
 }  // namespace
 
 double schwarzschild_radial_potential(const SchwarzschildOrbit& orbit, const double radius) {
@@ -110,6 +135,7 @@ Trajectory integrate_schwarzschild(const SchwarzschildOrbit& orbit,
     Trajectory out;
     out.points.reserve(max_steps + 1);
     out.points.push_back(initial);
+    record_radial_residual(&out, orbit, initial);
     out.diagnostics.final_step = step;
     const double horizon_event = horizon_radius(orbit.black_hole_mass) * (1.0 + 1.0e-6);
     if (!std::isfinite(horizon_event)) {
@@ -133,18 +159,25 @@ Trajectory integrate_schwarzschild(const SchwarzschildOrbit& orbit,
             break;
         }
         if (next.radius <= horizon_event) {
-            out.points.push_back(interpolate_event(state, next, horizon_event));
+            TrajectoryPoint event = interpolate_event(state, next, horizon_event);
+            event.radial_velocity = physical_radial_velocity(orbit, event.radius, -1);
+            out.points.push_back(event);
+            record_radial_residual(&out, orbit, event);
             ++out.diagnostics.accepted_steps;
             out.termination = TrajectoryTermination::crossed_horizon;
             break;
         }
         if (next.radius >= escape_radius) {
-            out.points.push_back(interpolate_event(state, next, escape_radius));
+            TrajectoryPoint event = interpolate_event(state, next, escape_radius);
+            event.radial_velocity = physical_radial_velocity(orbit, event.radius, 1);
+            out.points.push_back(event);
+            record_radial_residual(&out, orbit, event);
             ++out.diagnostics.accepted_steps;
             out.termination = TrajectoryTermination::reached_escape_radius;
             break;
         }
         out.points.push_back(next);
+        record_radial_residual(&out, orbit, next);
         ++out.diagnostics.accepted_steps;
     }
     return out;

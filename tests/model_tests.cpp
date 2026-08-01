@@ -40,6 +40,10 @@ int main() {
     const auto near_extremal = bh::rotational_energy(1.0, 0.999999999);
     near(near_extremal.rotational_fraction, 1.0-1.0/std::sqrt(2.0), 3.0e-5,
          "near-extremal reservoir approaches 29.29 percent");
+    const auto closest_subextremal = bh::rotational_energy(1.0, std::nextafter(1.0, 0.0));
+    check(std::isfinite(closest_subextremal.rotational_fraction) &&
+              std::isfinite(closest_subextremal.d_rotational_energy_d_spin_joules),
+          "closest representable sub-extremal spin has finite algebraic outputs");
     near(bh::classical_penrose_efficiency_limit(), (std::sqrt(2.0) - 1.0) / 2.0, 1e-15,
          "classical ideal Penrose efficiency limit is approximately 20.71 percent");
 
@@ -84,6 +88,11 @@ int main() {
          ranged.upper.rotational_energy_joules - ranged.central.rotational_energy_joules,
          0.0,
          "range reports upper asymmetric uncertainty");
+    const auto doubled_mass = bh::rotational_energy(2.0 * bh::solar_mass_kg, 0.9);
+    const auto single_mass = bh::rotational_energy(bh::solar_mass_kg, 0.9);
+    near_relative(doubled_mass.rotational_energy_joules,
+                  2.0 * single_mass.rotational_energy_joules, 1.0e-14,
+                  "rotational reservoir is linear in mass at fixed spin");
 
     bool rejected = false;
     try { (void)bh::rotational_energy(1.0, 1.0); } catch (const std::invalid_argument&) { rejected = true; }
@@ -111,6 +120,8 @@ int main() {
         circular_orbit, {0.0, r, 0.0, 0.0, 0.0},
         1e-3, 1000, 20.0);
     near(circular.points.back().radius, r, 1e-10, "Schwarzschild circular orbit remains circular");
+    check(circular.diagnostics.maximum_normalized_radial_residual <= 1.0e-12,
+          "Schwarzschild circular orbit preserves the radial first integral");
 
     const bh::SchwarzschildOrbit radial_schwarzschild{1.0, 1.0, 0.0};
     const double radial_start = 10.0;
@@ -128,6 +139,8 @@ int main() {
     near_relative(schwarzschild_infall.points.back().affine_parameter,
                   expected_schwarzschild_infall, 1.0e-6,
                   "Schwarzschild RK4 free fall matches the analytic proper time");
+    check(schwarzschild_infall.diagnostics.maximum_normalized_radial_residual <= 1.0e-8,
+          "Schwarzschild infall keeps a small radial first-integral residual");
 
     rejected = false;
     try {
@@ -152,6 +165,8 @@ int main() {
     const auto escaping = bh::integrate_kerr(outward, 10.0, 0.01, 10'000, 11.0);
     check(escaping.termination == bh::TrajectoryTermination::reached_escape_radius,
           "outward Kerr trajectory reaches escape radius");
+    check(escaping.diagnostics.maximum_normalized_radial_residual <= 1.0e-12,
+          "outward Kerr trajectory preserves its radial first integral");
     const auto target = bh::integrate_kerr_to_radius(outward, 10.0, 10.5, 0.01, 10'000);
     check(target.termination == bh::TrajectoryTermination::reached_target_radius,
           "outward Kerr trajectory reaches requested target radius");
@@ -181,6 +196,12 @@ int main() {
     near(momentum.azimuth, 0.02, 1e-14,
          "Schwarzschild limit preserves conventional positive azimuthal momentum");
 
+    rejected = false;
+    try {
+        (void)bh::kerr_equatorial_four_momentum({1.0, 0.0, -1.0, 0.0, 1.0, -1}, 10.0);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "Kerr momentum rejects a past-directed Schwarzschild state");
+
     const bh::KerrOrbit radial_infall{1.0, 0.0, 1.0, 0.0, 1.0, -1};
     const bh::KerrIntegrationControl strict_control{1.0e-10, 1.0e-10, 0.0};
     const auto analytic_infall = bh::integrate_kerr_to_radius(
@@ -195,6 +216,8 @@ int main() {
     check(analytic_infall.diagnostics.accepted_steps > 0 &&
               analytic_infall.diagnostics.maximum_normalized_error <= 1.0,
           "adaptive Kerr diagnostics report an accepted bounded-error solution");
+    check(analytic_infall.diagnostics.maximum_normalized_radial_residual <= 1.0e-12,
+          "adaptive Kerr infall preserves the radial first integral");
     const auto adaptive_probe = bh::integrate_kerr_to_radius(
         radial_infall, 10.0, 8.0, 1.0, 100'000, {1.0e-12, 1.0e-12, 0.0});
     check(adaptive_probe.termination == bh::TrajectoryTermination::reached_target_radius &&
@@ -233,6 +256,17 @@ int main() {
           "positive-energy reference fragment reaches configured escape radius");
     check(penrose.extracted_energy > 0.0 && penrose.eta_penrose > 0.0,
           "reference event reports positive net extracted energy");
+    near_relative(penrose.extracted_energy,
+                  penrose.escaping_energy - penrose.input_energy, 1.0e-14,
+                  "Penrose extracted energy is the escaping energy minus input energy");
+    near_relative(penrose.eta_penrose,
+                  penrose.extracted_energy / penrose.input_energy, 1.0e-14,
+                  "Penrose efficiency is the normalized net extracted energy");
+    check(std::max({penrose.incoming_trajectory.diagnostics.maximum_normalized_radial_residual,
+                    penrose.captured_trajectory.diagnostics.maximum_normalized_radial_residual,
+                    penrose.escaping_trajectory.diagnostics.maximum_normalized_radial_residual}) <=
+              1.0e-7,
+          "Penrose trajectories preserve their radial first integrals");
     const auto scaled_penrose = bh::evaluate_equatorial_penrose_event(
         {2.0, 0.999, 2.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, {}, 1e-7},
         {1.10, 2.07, -2.0});
@@ -247,6 +281,11 @@ int main() {
         {2.1, 2.07, -2.0});
     check(outside_ergosphere.status == bh::PenroseEventStatus::outside_ergosphere,
           "split outside the equatorial ergosphere is rejected");
+    const auto nonrotating_penrose = bh::evaluate_equatorial_penrose_event(
+        {1.0, 0.0, 1.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, {}, 1e-7},
+        {2.1, 2.07, -2.0});
+    check(nonrotating_penrose.status == bh::PenroseEventStatus::outside_ergosphere,
+          "nonrotating Kerr has no equatorial Penrose split domain");
 
     const auto loaded_event = bh::load_equatorial_penrose_event_input(
         std::filesystem::path(BH_SOURCE_DIR) / "scenarios" / "equatorial_penrose_reference.cfg");
@@ -277,12 +316,12 @@ int main() {
     } catch (const std::invalid_argument&) { rejected = true; }
     check(rejected, "scenario loader rejects duplicate keys");
 
-    const auto weak = bh::estimate_plasma_extraction({0.0, 1.0, 10.0, 0.9, 2.0});
+    const auto weak = bh::estimate_toy_plasma_transport({0.0, 1.0, 10.0, 0.9, 2.0});
     near(weak.outward_electromagnetic_power_watts, 0.0, 0.0,
          "zero field produces zero toy outward electromagnetic power");
     near(weak.outward_electromagnetic_energy_joules, 0.0, 0.0,
          "zero field produces zero toy outward electromagnetic energy");
-    const auto plasma = bh::estimate_plasma_extraction({1.0, 1e-8, 10.0, 0.9, 2.0});
+    const auto plasma = bh::estimate_toy_plasma_transport({1.0, 1e-8, 10.0, 0.9, 2.0});
     check(plasma.alfven_speed_m_s > 0.0 && plasma.alfven_speed_m_s < bh::speed_of_light_m_s,
           "relativistic Alfven speed is causal");
     check(plasma.spin_coupling_efficiency >= 0.0 && plasma.spin_coupling_efficiency <= 1.0,
@@ -293,10 +332,18 @@ int main() {
     near_relative(plasma.outward_electromagnetic_energy_joules,
                   plasma.outward_electromagnetic_power_watts * 2.0, 1.0e-12,
                   "toy outward electromagnetic energy scales with duration");
+    const auto zero_spin_plasma = bh::estimate_toy_plasma_transport({1.0, 1e-8, 10.0, 0.0, 2.0});
+    check(zero_spin_plasma.poynting_power_watts > 0.0 &&
+              zero_spin_plasma.outward_electromagnetic_power_watts == 0.0,
+          "toy spin factor removes outward coupled power for a nonrotating source");
+    const auto compatibility_plasma = bh::estimate_plasma_extraction({1.0, 1e-8, 10.0, 0.9, 2.0});
+    near_relative(compatibility_plasma.outward_electromagnetic_energy_joules,
+                  plasma.outward_electromagnetic_energy_joules, 0.0,
+                  "legacy plasma API preserves the toy transport calculation");
 
     rejected = false;
     try {
-        (void)bh::estimate_plasma_extraction(
+        (void)bh::estimate_toy_plasma_transport(
             {std::numeric_limits<double>::quiet_NaN(), 1.0, 1.0, 0.5, 1.0});
     } catch (const std::invalid_argument&) { rejected = true; }
     check(rejected, "plasma model rejects non-finite public input");
@@ -309,7 +356,7 @@ int main() {
 
     overflow_rejected = false;
     try {
-        (void)bh::estimate_plasma_extraction(
+        (void)bh::estimate_toy_plasma_transport(
             {std::numeric_limits<double>::max(), 1.0, 1.0, 0.5, 1.0});
     } catch (const std::overflow_error&) { overflow_rejected = true; }
     check(overflow_rejected, "plasma model rejects non-finite overflow results");

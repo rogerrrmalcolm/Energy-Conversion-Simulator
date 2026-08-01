@@ -53,6 +53,7 @@ struct PenroseEventResult {
     double energy_conservation_residual{};
     double angular_momentum_conservation_residual{};
     double geodesic_initialization_residual{};
+    // Includes split, initialization, and trajectory radial-first-integral residuals.
     double maximum_normalized_residual{};
     // These are physical spacetime trajectories, unlike any future parameter search trace.
     Trajectory incoming_trajectory{};

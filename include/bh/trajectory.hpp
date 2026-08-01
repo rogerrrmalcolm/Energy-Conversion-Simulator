@@ -24,6 +24,8 @@ enum class TrajectoryTermination {
 struct IntegrationDiagnostics {
     std::size_t accepted_steps{};
     std::size_t rejected_steps{};
+    // Dimensionless residual of the radial first integral at reported points.
+    double maximum_normalized_radial_residual{};
     double maximum_normalized_error{};
     double final_step{};
 };

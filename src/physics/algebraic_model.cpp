@@ -73,19 +73,23 @@ bool nearly_equal(const double left, const double right) {
            16.0 * std::numeric_limits<double>::epsilon() * scale;
 }
 
+double one_minus_spin_squared(const double spin) {
+    return (1.0 - spin) * (1.0 + spin);
+}
+
 double rotational_sensitivity_fraction_per_spin(const double spin) {
     if (spin == 0.0) {
         return 0.0;
     }
 
-    const double root = std::sqrt(1.0 - spin * spin);
+    const double root = std::sqrt(one_minus_spin_squared(spin));
     return spin / (4.0 * root * irreducible_mass_fraction(spin));
 }
 }
 
 double irreducible_mass_fraction(const double spin) {
     validate_spin(spin);
-    const double inner = std::sqrt(1.0 - spin * spin);
+    const double inner = std::sqrt(one_minus_spin_squared(spin));
     return std::sqrt((1.0 + inner) / 2.0);
 }
 

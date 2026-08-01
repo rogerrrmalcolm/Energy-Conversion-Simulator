@@ -9,9 +9,9 @@ namespace bh {
 struct KerrOrbit {
     double black_hole_mass{1.0};
     double spin_length{0.9};       // a, with |a| < M
-    double energy{1.0};            // Conserved energy at infinity.
-    double angular_momentum{0.0};  // Conserved axial angular momentum L_z.
-    double rest_mass{1.0};         // Mass-shell parameter: 1 timelike, 0 null.
+    double energy{1.0};            // Total conserved energy at infinity, E = -p_t.
+    double angular_momentum{0.0};  // Total conserved axial angular momentum, L_z = p_phi.
+    double rest_mass{1.0};         // Mass-shell parameter mu; 1 is normalized timelike, 0 null.
     int radial_direction{-1};      // -1 inward, +1 outward.
     double carter_constant{0.0};   // Must remain zero in the equatorial baseline.
 };

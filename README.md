@@ -20,7 +20,11 @@ E_mass = M * c^2
 E_rot  = (M - M_irr) * c^2
 ~~~
 
-E_rot is the theoretical rotational-energy reservoir, not energy guaranteed to be extracted by one event. The model supports ordered lower, central, and upper mass and spin values. It evaluates the same formula at each bound and reports asymmetric uncertainty relative to the central result.
+E_rot is the theoretical rotational-energy reservoir, not energy guaranteed to be extracted by one event. The model supports ordered lower, central, and upper mass and spin values. Because the formula is monotonic in both positive mass and sub-extremal spin, it evaluates the two bounding corners `(M_low, a_low)` and `(M_high, a_high)`. The reported range is a bound calculation, not a statistical confidence interval unless the supplied input bounds already have that interpretation. Near extremality, the implementation evaluates `1 - a_star^2` in a cancellation-resistant form; exact `a_star = 1` remains outside this sub-extremal model.
+
+### Schwarzschild reference trajectory
+
+The code also retains a separate, fixed-step RK4 solver for equatorial timelike Schwarzschild motion. It validates the initial radial mass-shell relation, reports the radial-first-integral residual, and is tested against circular motion and analytic radial free-fall. It is a zero-spin validation reference; the Penrose evaluator uses the adaptive Kerr solver, not this component. It does not provide the full turning-point handling or adaptive control of the Kerr path.
 
 ### Equatorial Kerr geodesics
 
@@ -34,7 +38,7 @@ P(r) = E*(r^2 + a^2) - a*L_z
 R(r) = P(r)^2 - Delta(r) * (mu^2*r^2 + (L_z - a*E)^2)
 ~~~
 
-R(r) >= 0 is required for the radial state to be allowed. The integrator uses adaptive RK4 step doubling: it compares one full step with two half steps, accepts the higher-accuracy state only when the normalized radial and azimuthal error is within tolerance, and records accepted/rejected-step diagnostics. Boyer-Lindquist coordinate time is reported but excluded from step control because it becomes coordinate-singular at the horizon. The result returns explicit termination states for a horizon crossing, a configured escape radius, a requested target radius, a turning point, or an invalid state.
+R(r) >= 0 is required for the radial state to be allowed. The solver rejects a state whose Boyer-Lindquist time component is not future-directed. The integrator uses adaptive RK4 step doubling: it compares one full step with two half steps, accepts the higher-accuracy state only when the normalized radial and azimuthal error is within tolerance, and records accepted/rejected-step diagnostics. It also reports a normalized residual of the radial first integral, `(Sigma * dr/dlambda)^2 = R(r)`, at every reported trajectory point. Boyer-Lindquist coordinate time is reported but excluded from step control because it becomes coordinate-singular at the horizon. The result returns explicit termination states for a horizon crossing, a configured escape radius, a requested target radius, a turning point, or an invalid state.
 
 A turning point is localized at the first radial-potential root, R(r) = 0, in the selected radial direction. This restricted baseline stops at that event rather than reversing the particle's radial direction: an inward branch that turns before the horizon is not captured, and an outward branch that turns before the configured escape radius is not escaping.
 
@@ -53,9 +57,9 @@ An event is physically feasible in this restricted model only when:
 
 - the captured fragment has negative conserved energy and crosses the horizon;
 - the escaping fragment has positive conserved energy and reaches the configured large escape_radius;
-- four-momentum, mass-shell, energy, angular-momentum, and geodesic-initialization residuals are within the declared tolerance.
+- four-momentum, mass-shell, energy, angular-momentum, geodesic-initialization, and radial-first-integral residuals are within the declared tolerance.
 
-The escape radius is separate from the ergosphere boundary. The ergosphere determines where a Penrose split can produce a negative-energy fragment. Escape is confirmed only when the outward fragment reaches the independently configured large radius. The coordinate integrator stops immediately outside the Boyer-Lindquist horizon and records that event as crossed_horizon.
+The escape radius is separate from the ergosphere boundary. The ergosphere determines where a Penrose split can produce a negative-energy fragment. Escape is confirmed only when the outward fragment reaches the independently configured large radius. The coordinate integrator stops immediately outside the Boyer-Lindquist horizon and records that event as crossed_horizon. This first baseline accepts only a direct split: the selected captured fragment must initially point inward and the selected escaping fragment must initially point outward. It does not yet model branches that reverse direction at a later turning point.
 
 ~~~text
 eta_penrose = (E_escape - E_input) / E_input
@@ -64,11 +68,11 @@ E_extracted = max(0, E_escape - E_input)
 
 Those event energies are normalized geometrized quantities. They are not joules and are not a claim about an observed astrophysical extraction.
 
-The familiar approximately 20.71 percent classical Penrose efficiency is a restrictive ideal-limit check, not a result this engine claims for an arbitrary event. The reference scenario is deliberately below that limit.
+The familiar approximately 20.71 percent classical Penrose efficiency is a restrictive ideal-limit check, not a result this engine claims for an arbitrary event. Because this model requires `a_star < 1`, the exact extremal limit is not an attainable target in this baseline. The reference scenario is deliberately below that limit.
 
 ### Reduced toy-plasma transport
 
-The plasma component is a transparent 0-D ideal-MHD scaling estimate, not an MHD or GRMHD simulation. Given a magnetic field, mass density, flow area, black-hole spin, and duration, it calculates magnetization, a causal relativistic Alfven speed, raw electromagnetic Poynting power through the declared surface, a visible heuristic spin-coupling factor, and the resulting outward electromagnetic power and energy.
+The plasma component is a transparent 0-D, ideal-MHD-inspired transport scaling, not an MHD or GRMHD simulation. Given a magnetic field, mass density, flow area, black-hole spin, and duration, it calculates magnetization, a causal relativistic Alfven speed, a raw electromagnetic flux scaling through the declared surface, a visible heuristic spin-coupling factor, and the resulting outward electromagnetic power and energy.
 
 ~~~text
 sigma = B^2 / (mu_0 * rho * c^2)
@@ -78,7 +82,7 @@ P_out = P_EM * eta_spin_coupling
 E_out = P_out * duration
 ~~~
 
-`E_out` is only the toy model's outward electromagnetic energy through the configured surface. It does not model matter flux, collector capture, conversion, storage, transmission, or usable delivered energy.
+The raw flux expression assumes a magnetic field perpendicular to a representative flow. `E_out` is only the toy model's outward electromagnetic energy through the configured surface; it is not energy proven to have been extracted from the black hole. The model has no field geometry, black-hole mass scaling, accretion solution, matter flux, collector capture, conversion, storage, transmission, or usable delivered energy.
 
 ## Run the CLI
 
@@ -173,7 +177,7 @@ model_tests checks:
 - analytic spin sensitivity, floating-point uncertainty roundoff, and non-finite-result rejection;
 - Schwarzschild timelike radial mass-shell validation and analytic radial free-fall time;
 - Kerr horizon and static-limit formulas;
-- allowed radial potential, horizon capture, and configured-radius escape;
+- allowed radial potential, future-directed momentum, radial-invariant diagnostics, horizon capture, and configured-radius escape;
 - a local Penrose split with conservation residual checks;
 - an analytic radial Schwarzschild-limit Kerr infall and adaptive-step rejection/refinement;
 - scale invariance of the normalized Penrose efficiency;
@@ -181,13 +185,13 @@ model_tests checks:
 - loading, rejecting malformed scenarios, and executing the versioned reference scenario;
 - CLI help, algebraic, uncertainty-range, valid-Penrose, and rejected-scenario workflows;
 - installation, downstream CMake configuration, compilation, and execution of a package consumer;
-- toy-plasma input validation, overflow rejection, and causal Alfven speed.
+- toy-plasma input validation, zero-spin coupling, overflow rejection, and causal Alfven speed.
 
 ## Deliberate limits and next work
 
-- Kerr motion is equatorial only, has Q = 0, uses adaptive RK4, and does not yet continue through radial turning points.
-- The Penrose model is a neutral, idealized two-body test-particle split. It has no charged-particle fields, radiation reaction, backreaction, collision model, nuclear fragmentation model, or GRMHD.
-- The plasma component is a reduced toy model, not MHD or GRMHD.
+- Kerr motion is equatorial only, has Q = 0, uses adaptive RK4, and does not yet continue through radial turning points. E and L_z are fixed input constants rather than separately evolved variables, so the reported radial-first-integral residual is the invariant check available to this restricted solver.
+- The Penrose model is a neutral, idealized two-body test-particle split with identical daughter rest masses and an immediate inward/outward branch requirement. It has no charged-particle fields, radiation reaction, backreaction, collision model, nuclear fragmentation model, unequal daughter masses, or GRMHD.
+- The plasma component is a reduced, ideal-MHD-inspired toy transport model with a heuristic spin factor, not an MHD or GRMHD solution.
 - A* parameter search is deliberately not implemented yet. Any future search must call this evaluator for each parameter set and must never be presented as a particle trajectory.
 - Multithreading and SIMD are deliberately deferred until scalar correctness, integration error control, and invariant monitoring are expanded and profiled.
 

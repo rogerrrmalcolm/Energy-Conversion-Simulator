@@ -6,7 +6,7 @@
 #include <stdexcept>
 
 namespace bh {
-PlasmaResult estimate_plasma_extraction(const PlasmaInput& in) {
+PlasmaResult estimate_toy_plasma_transport(const PlasmaInput& in) {
     if (!std::isfinite(in.magnetic_field_tesla) ||
         !std::isfinite(in.mass_density_kg_m3) ||
         !std::isfinite(in.flow_area_m2) ||
@@ -36,5 +36,9 @@ PlasmaResult estimate_plasma_extraction(const PlasmaInput& in) {
     }
     return {sigma, alfven, poynting, coupling, outward_electromagnetic_power,
             outward_electromagnetic_energy};
+}
+
+PlasmaResult estimate_plasma_extraction(const PlasmaInput& input) {
+    return estimate_toy_plasma_transport(input);
 }
 }

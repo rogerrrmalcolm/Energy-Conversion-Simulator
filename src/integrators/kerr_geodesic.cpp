@@ -291,6 +291,29 @@ double normalized_rk4_error(const TrajectoryPoint& full_step,
          normalized_component_error(full_step.phi, two_half_steps.phi, control) / 15.0});
 }
 
+double normalized_radial_residual(const KerrOrbit& orbit, const TrajectoryPoint& point) {
+    const double sigma = kerr_equatorial_sigma(point.radius);
+    const double radial_term = sigma * point.radial_velocity;
+    const double radial_term_squared = radial_term * radial_term;
+    const double potential = kerr_radial_potential(orbit, point.radius);
+    if (!std::isfinite(radial_term_squared) || !std::isfinite(potential)) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const double scale = std::max({1.0, std::abs(radial_term_squared), std::abs(potential)});
+    return std::abs(radial_term_squared - potential) / scale;
+}
+
+void record_radial_residual(Trajectory* trajectory, const KerrOrbit& orbit,
+                            const TrajectoryPoint& point) {
+    trajectory->diagnostics.maximum_normalized_radial_residual = std::max(
+        trajectory->diagnostics.maximum_normalized_radial_residual,
+        normalized_radial_residual(orbit, point));
+}
+
+double physical_radial_velocity(const KerrOrbit& orbit, const double radius) {
+    return kerr_equatorial_four_momentum(orbit, radius).radial;
+}
+
 double next_step_size(const double current_step, const double normalized_error,
                       const bool accepted, const double maximum_step) {
     if (normalized_error == 0.0) {
@@ -348,6 +371,7 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
     if (initial_derivative.status == EvaluationStatus::turning_point) {
         initial.radial_velocity = 0.0;
         out.points.push_back(initial);
+        record_radial_residual(&out, orbit, initial);
         out.termination = TrajectoryTermination::turning_point;
         return out;
     }
@@ -358,6 +382,7 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
     }
     initial.radial_velocity = initial_derivative.value.radial;
     out.points.push_back(initial);
+    record_radial_residual(&out, orbit, initial);
 
     double step = maximum_step;
     std::size_t attempts = 0;
@@ -376,6 +401,7 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
         const DerivativeEvaluation k1 = derivative(orbit, state);
         if (k1.status == EvaluationStatus::turning_point) {
             out.points.back().radial_velocity = 0.0;
+            record_radial_residual(&out, orbit, out.points.back());
             out.termination = TrajectoryTermination::turning_point;
             break;
         }
@@ -392,11 +418,15 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
             if (const auto turning = locate_turning_point(orbit, state, horizon_probe);
                 turning.has_value()) {
                 out.points.push_back(*turning);
+                record_radial_residual(&out, orbit, *turning);
                 ++out.diagnostics.accepted_steps;
                 out.termination = TrajectoryTermination::turning_point;
                 break;
             }
-            out.points.push_back(horizon_event_point(state, k1.value, step, horizon_event));
+            TrajectoryPoint event = horizon_event_point(state, k1.value, step, horizon_event);
+            event.radial_velocity = physical_radial_velocity(orbit, event.radius);
+            out.points.push_back(event);
+            record_radial_residual(&out, orbit, event);
             ++out.diagnostics.accepted_steps;
             out.termination = TrajectoryTermination::crossed_horizon;
             break;
@@ -422,6 +452,7 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
             if (const auto turning = locate_turning_point(orbit, state, probe);
                 turning.has_value()) {
                 out.points.push_back(*turning);
+                record_radial_residual(&out, orbit, *turning);
                 ++out.diagnostics.accepted_steps;
                 out.termination = TrajectoryTermination::turning_point;
                 break;
@@ -456,7 +487,8 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
             continue;
         }
 
-        const TrajectoryPoint next = second_half_step.next;
+        TrajectoryPoint next = second_half_step.next;
+        next.radial_velocity = physical_radial_velocity(orbit, next.radius);
         out.diagnostics.maximum_normalized_error =
             std::max(out.diagnostics.maximum_normalized_error, error);
         ++out.diagnostics.accepted_steps;
@@ -465,9 +497,12 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
             crosses(state.radius, next.radius, *target_radius, orbit.radial_direction)) {
             const auto event = locate_radius_event(orbit, state, step, *target_radius,
                                                    orbit.radial_direction);
-            out.points.push_back(event.has_value()
-                                     ? *event
-                                     : interpolate_event(state, next, *target_radius));
+            TrajectoryPoint target_event = event.has_value()
+                                               ? *event
+                                               : interpolate_event(state, next, *target_radius);
+            target_event.radial_velocity = physical_radial_velocity(orbit, target_event.radius);
+            out.points.push_back(target_event);
+            record_radial_residual(&out, orbit, target_event);
             out.termination = TrajectoryTermination::reached_target_radius;
             break;
         }
@@ -475,14 +510,18 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
             crosses(state.radius, next.radius, *escape_radius, orbit.radial_direction)) {
             const auto event = locate_radius_event(orbit, state, step, *escape_radius,
                                                    orbit.radial_direction);
-            out.points.push_back(event.has_value()
-                                     ? *event
-                                     : interpolate_event(state, next, *escape_radius));
+            TrajectoryPoint escape_event = event.has_value()
+                                               ? *event
+                                               : interpolate_event(state, next, *escape_radius);
+            escape_event.radial_velocity = physical_radial_velocity(orbit, escape_event.radius);
+            out.points.push_back(escape_event);
+            record_radial_residual(&out, orbit, escape_event);
             out.termination = TrajectoryTermination::reached_escape_radius;
             break;
         }
 
         out.points.push_back(next);
+        record_radial_residual(&out, orbit, next);
         step = std::max(minimum_step, next_step_size(step, error, true, maximum_step));
     }
 
@@ -588,6 +627,9 @@ KerrFourMomentum kerr_equatorial_four_momentum(const KerrOrbit& orbit,
     if (!std::isfinite(momentum.coordinate_time) || !std::isfinite(momentum.radial) ||
         !std::isfinite(momentum.azimuth)) {
         throw std::overflow_error("Kerr four-momentum overflowed");
+    }
+    if (momentum.coordinate_time <= 0.0) {
+        throw std::invalid_argument("equatorial Kerr momentum must be future-directed");
     }
     return momentum;
 }
