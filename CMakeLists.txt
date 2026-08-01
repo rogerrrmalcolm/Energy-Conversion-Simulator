@@ -15,7 +15,7 @@ add_library(black_hole_models
     src/physics/algebraic_model.cpp
     src/physics/penrose_model.cpp
     src/io/penrose_scenario_io.cpp
-    src/optimization/a_star.cpp
+    src/optimization/dijkstra.cpp
     src/integrators/schwarzschild_geodesic.cpp
     src/integrators/kerr_geodesic.cpp
     src/physics/plasma_model.cpp)
