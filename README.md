@@ -138,7 +138,7 @@ Kerr and Penrose use the same selected black hole in normalized geometrized coor
 
 The Kerr menu asks only for an orbit's `E`, `Lz`, rest mass, direction, and boundaries. The Penrose menu asks only for the parent/fragment properties and split parameters; it reuses the shared spin and Kerr integration controls, then delegates incoming, capture, and escape path validation to the Kerr integrator. The toy-plasma baseline reuses shared spin; its reduced formula does not use mass.
 
-A future A* layer will keep the black-hole session fixed and vary only `split_radius_over_m`, `incoming_lz_over_m_m`, and `split_angle_rad`. Its goal result must satisfy both a valid Kerr path and the configured Penrose-efficiency target. Every prompt displays a retained default, so rerunning a menu action does not require re-entering unchanged values.
+A basic deterministic A* grid baseline now exists in `src/optimization/a_star.cpp`. It searches three bounded integer coordinates with six one-step neighbors, unit adjustment costs, and `h = 0`, so its first form is Dijkstra mode. It is deliberately only a tested graph-algorithm baseline: it does not yet call the Penrose evaluator or appear in the CLI. The future physics connection will keep the black-hole session fixed and vary only `split_radius_over_m`, `incoming_lz_over_m_m`, and `split_angle_rad`.
 
 The original argument-based commands and versioned Penrose scenario files remain the reproducible interface for benchmarks and tests.
 
@@ -181,6 +181,7 @@ model_tests checks:
 - a local Penrose split with conservation residual checks;
 - an analytic radial Schwarzschild-limit Kerr infall and adaptive-step rejection/refinement;
 - scale invariance of the normalized Penrose efficiency;
+- a deterministic bounded three-coordinate A* baseline, including shortest-path, tie-break, and bounds tests;
 - rejection of a split outside the ergosphere;
 - loading, rejecting malformed scenarios, and executing the versioned reference scenario;
 - CLI help, algebraic, uncertainty-range, valid-Penrose, and rejected-scenario workflows;
@@ -192,7 +193,7 @@ model_tests checks:
 - Kerr motion is equatorial only, has Q = 0, uses adaptive RK4, and does not yet continue through radial turning points. E and L_z are fixed input constants rather than separately evolved variables, so the reported radial-first-integral residual is the invariant check available to this restricted solver.
 - The Penrose model is a neutral, idealized two-body test-particle split with identical daughter rest masses and an immediate inward/outward branch requirement. It has no charged-particle fields, radiation reaction, backreaction, collision model, nuclear fragmentation model, unequal daughter masses, or GRMHD.
 - The plasma component is a reduced, ideal-MHD-inspired toy transport model with a heuristic spin factor, not an MHD or GRMHD solution.
-- A* parameter search is deliberately not implemented yet. Any future search must call this evaluator for each parameter set and must never be presented as a particle trajectory.
+- The A* layer currently searches only a toy integer grid. Connecting it to Penrose candidates, physical goal states, scenario files, and CLI output is the next optimization milestone; its returned path must never be presented as a particle trajectory.
 - Multithreading and SIMD are deliberately deferred until scalar correctness, integration error control, and invariant monitoring are expanded and profiled.
 
 ## CMake library

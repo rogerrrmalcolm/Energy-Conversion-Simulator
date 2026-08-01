@@ -1,4 +1,5 @@
 #include "bh/algebraic_model.hpp"
+#include "bh/a_star.hpp"
 #include "bh/constants.hpp"
 #include "bh/kerr_geodesic.hpp"
 #include "bh/penrose_model.hpp"
@@ -32,6 +33,28 @@ void near_relative(double actual, double expected, double relative_tolerance,
 }
 
 int main() {
+    const bh::AStarGridKey grid_lower{0, 0, 0};
+    const bh::AStarGridKey grid_upper{1, 1, 1};
+    const bh::AStarGridKey grid_start{0, 0, 0};
+    const bh::AStarGridKey grid_goal{1, 1, 1};
+    const auto grid_path = bh::find_a_star_grid_path(grid_start, grid_goal, grid_lower, grid_upper);
+    check(grid_path.found, "basic A* finds an in-bounds grid goal");
+    check(grid_path.parameter_adjustment_path.size() == 4,
+          "basic A* returns the three unit changes of a shortest path");
+    check(grid_path.parameter_adjustment_path.front() == grid_start &&
+              grid_path.parameter_adjustment_path.back() == grid_goal,
+          "basic A* path starts and ends at the declared grid nodes");
+    const auto repeated_grid_path =
+        bh::find_a_star_grid_path(grid_start, grid_goal, grid_lower, grid_upper);
+    check(repeated_grid_path.parameter_adjustment_path == grid_path.parameter_adjustment_path,
+          "basic A* has deterministic tie breaking");
+    const auto already_at_goal =
+        bh::find_a_star_grid_path(grid_start, grid_start, grid_lower, grid_upper);
+    check(already_at_goal.found && already_at_goal.parameter_adjustment_path.size() == 1,
+          "basic A* returns a one-node path when start already meets the goal");
+    check(!bh::find_a_star_grid_path(grid_start, {2, 0, 0}, grid_lower, grid_upper).found,
+          "basic A* rejects an out-of-bounds goal");
+
     const auto nonrotating = bh::rotational_energy(bh::solar_mass_kg, 0.0);
     near(nonrotating.rotational_energy_joules, 0.0, 1.0, "Schwarzschild has no rotational reservoir");
     near(nonrotating.irreducible_mass_fraction, 1.0, 0.0, "Schwarzschild irreducible mass equals total mass");
