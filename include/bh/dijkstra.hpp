@@ -46,6 +46,7 @@ struct PenroseDijkstraSearchConfig {
 
 enum class PenroseDijkstraSearchStatus {
     found_goal,
+    best_feasible_below_target,
     no_solution_within_bounds,
     target_unattainable_under_model,
     node_budget_exhausted,
@@ -104,12 +105,17 @@ struct PenroseDijkstraSearchDiagnostics {
 
 struct PenroseDijkstraSearchResult {
     PenroseDijkstraSearchStatus status{PenroseDijkstraSearchStatus::no_solution_within_bounds};
+    // True when either a target-reaching goal or a completed-search fallback
+    // candidate was selected.
     bool found{};
-    // Ordered parameter-adjustment trace from the requested start to the goal.
+    bool target_reached{};
+    // Ordered minimum-cost parameter-adjustment trace from the requested start
+    // to the selected candidate.
     std::vector<PenroseDijkstraNode> parameter_adjustment_path;
     PenroseDijkstraSearchDiagnostics diagnostics{};
-    // The only physical trajectories returned by the search: those of the goal event.
-    PenroseEventResult goal_event{};
+    // The only physical trajectories returned by the search: those of the
+    // freshly verified selected event.
+    PenroseEventResult selected_event{};
     std::string failure_message{};
 };
 
@@ -142,7 +148,9 @@ struct PenrosePhaseMapResult {
 [[nodiscard]] std::string_view penrose_search_algorithm_name(PenroseSearchAlgorithm algorithm);
 
 // Finds the minimum number of one-grid-step parameter adjustments needed to reach
-// a physically feasible event whose Penrose efficiency reaches eta_target.
+// a physically feasible event whose Penrose efficiency reaches eta_target. If a
+// completed search has no such goal, returns the greatest validated extraction
+// in the grid, breaking extraction ties by minimum adjustment cost.
 [[nodiscard]] PenroseDijkstraSearchResult find_penrose_dijkstra_path(
     const EquatorialPenroseScenario& scenario, const PenroseDijkstraSearchConfig& config,
     std::stop_token stop_token = {});

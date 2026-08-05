@@ -303,13 +303,12 @@ bool approximately_equal(const double left, const double right) {
     return std::abs(left - right) <= 1.0e-12 * scale;
 }
 
-bool matches_fresh_goal(const CompactCandidateEvaluation& cached,
-                        const PenroseEventResult& fresh,
-                        const EquatorialPenroseScenario& scenario,
-                        const double eta_target) {
+bool matches_fresh_selection(const CompactCandidateEvaluation& cached,
+                             const PenroseEventResult& fresh,
+                             const EquatorialPenroseScenario& scenario,
+                             const double eta_target) {
     const CompactCandidateEvaluation rechecked = compact_evaluation(fresh, scenario, eta_target);
-    return cached.status == PenroseDijkstraNodeStatus::goal_feasible &&
-           rechecked.status == PenroseDijkstraNodeStatus::goal_feasible &&
+    return cached.status == rechecked.status &&
            cached.event_status == rechecked.event_status &&
            cached.captured_termination == rechecked.captured_termination &&
            cached.escaping_termination == rechecked.escaping_termination &&
@@ -320,6 +319,24 @@ bool matches_fresh_goal(const CompactCandidateEvaluation& cached,
            approximately_equal(cached.extracted_energy, rechecked.extracted_energy) &&
            approximately_equal(cached.maximum_normalized_residual,
                                rechecked.maximum_normalized_residual);
+}
+
+bool better_fallback(const CompactCandidateEvaluation& candidate,
+                     const std::size_t candidate_cost,
+                     const DijkstraGridKey& candidate_key,
+                     const CompactCandidateEvaluation& current_best,
+                     const std::size_t current_best_cost,
+                     const DijkstraGridKey& current_best_key) {
+    if (!approximately_equal(candidate.eta_penrose, current_best.eta_penrose)) {
+        return candidate.eta_penrose > current_best.eta_penrose;
+    }
+    if (!approximately_equal(candidate.extracted_energy, current_best.extracted_energy)) {
+        return candidate.extracted_energy > current_best.extracted_energy;
+    }
+    if (candidate_cost != current_best_cost) {
+        return candidate_cost < current_best_cost;
+    }
+    return candidate_key < current_best_key;
 }
 
 bool better_extraction(const PenroseDijkstraNode& candidate,
@@ -361,6 +378,24 @@ PenroseDijkstraNode reconstruct_node(
         }
     }
     return node;
+}
+
+std::vector<PenroseDijkstraNode> reconstruct_path(
+    const CandidateGrid& grid, const DijkstraGridKey& selected,
+    const std::map<DijkstraGridKey, CompactCandidateEvaluation>& evaluations,
+    const std::map<DijkstraGridKey, std::size_t>& best_cost,
+    const std::map<DijkstraGridKey, std::size_t>& discovery_order,
+    const std::map<DijkstraGridKey, DijkstraGridKey>& parent) {
+    std::vector<PenroseDijkstraNode> path;
+    for (DijkstraGridKey key = selected;; key = parent.at(key)) {
+        path.push_back(reconstruct_node(
+            grid, key, evaluations, best_cost, discovery_order, parent));
+        if (key == grid.start) {
+            break;
+        }
+    }
+    std::reverse(path.begin(), path.end());
+    return path;
 }
 }  // namespace
 
@@ -438,6 +473,8 @@ std::string_view penrose_dijkstra_search_status_name(const PenroseDijkstraSearch
     switch (status) {
     case PenroseDijkstraSearchStatus::found_goal:
         return "found_goal";
+    case PenroseDijkstraSearchStatus::best_feasible_below_target:
+        return "best_feasible_below_target";
     case PenroseDijkstraSearchStatus::no_solution_within_bounds:
         return "no_solution_within_bounds";
     case PenroseDijkstraSearchStatus::target_unattainable_under_model:
@@ -503,6 +540,7 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
     std::map<DijkstraGridKey, DijkstraGridKey> parent;
     std::map<DijkstraGridKey, std::size_t> discovery_order;
     std::map<DijkstraGridKey, CompactCandidateEvaluation> evaluations;
+    std::optional<DijkstraGridKey> best_fallback_key;
     std::size_t next_discovery_order = 1;
     open.push({0, grid.start, 0});
     best_cost.emplace(grid.start, 0);
@@ -540,6 +578,16 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
                 evaluation = entry;
                 ++result.diagnostics.nodes_evaluated;
                 record_status(result.diagnostics, evaluation->second.status);
+                if (has_validated_positive_extraction(event, scenario) &&
+                    evaluation->second.status ==
+                        PenroseDijkstraNodeStatus::escaping_without_target &&
+                    (!best_fallback_key ||
+                     better_fallback(evaluation->second, current.g_cost, current.key,
+                                     evaluations.at(*best_fallback_key),
+                                     best_cost.at(*best_fallback_key),
+                                     *best_fallback_key))) {
+                    best_fallback_key = current.key;
+                }
             } catch (const std::exception& error) {
                 result.status = PenroseDijkstraSearchStatus::evaluation_failure;
                 result.failure_message = "candidate evaluator threw: " + std::string(error.what());
@@ -559,7 +607,9 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
                     "fresh goal verification threw: " + std::string(error.what());
                 return with_elapsed(std::move(result), start_time);
             }
-            if (!matches_fresh_goal(evaluation->second, fresh_goal, scenario, config.eta_target)) {
+            if (evaluation->second.status != PenroseDijkstraNodeStatus::goal_feasible ||
+                !matches_fresh_selection(
+                    evaluation->second, fresh_goal, scenario, config.eta_target)) {
                 result.status = PenroseDijkstraSearchStatus::evaluation_failure;
                 result.failure_message =
                     "fresh goal verification did not match the cached candidate evaluation";
@@ -568,16 +618,10 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
 
             result.status = PenroseDijkstraSearchStatus::found_goal;
             result.found = true;
-            result.goal_event = std::move(fresh_goal);
-            for (DijkstraGridKey key = current.key;; key = parent.at(key)) {
-                result.parameter_adjustment_path.push_back(reconstruct_node(
-                    grid, key, evaluations, best_cost, discovery_order, parent));
-                if (key == grid.start) {
-                    break;
-                }
-            }
-            std::reverse(result.parameter_adjustment_path.begin(),
-                         result.parameter_adjustment_path.end());
+            result.target_reached = true;
+            result.selected_event = std::move(fresh_goal);
+            result.parameter_adjustment_path = reconstruct_path(
+                grid, current.key, evaluations, best_cost, discovery_order, parent);
             return with_elapsed(std::move(result), start_time);
         }
 
@@ -608,7 +652,39 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
         }
     }
 
-    result.status = PenroseDijkstraSearchStatus::no_solution_within_bounds;
+    if (!best_fallback_key) {
+        result.status = PenroseDijkstraSearchStatus::no_solution_within_bounds;
+        return with_elapsed(std::move(result), start_time);
+    }
+
+    PenroseEventResult fresh_fallback;
+    try {
+        fresh_fallback = evaluate_equatorial_penrose_event(
+            scenario, split_at(grid, *best_fallback_key));
+        ++result.diagnostics.final_verification_evaluations;
+    } catch (const std::exception& error) {
+        result.status = PenroseDijkstraSearchStatus::evaluation_failure;
+        result.failure_message =
+            "fresh fallback verification threw: " + std::string(error.what());
+        return with_elapsed(std::move(result), start_time);
+    }
+    const CompactCandidateEvaluation& cached_fallback = evaluations.at(*best_fallback_key);
+    if (cached_fallback.status != PenroseDijkstraNodeStatus::escaping_without_target ||
+        !has_validated_positive_extraction(fresh_fallback, scenario) ||
+        !matches_fresh_selection(
+            cached_fallback, fresh_fallback, scenario, config.eta_target)) {
+        result.status = PenroseDijkstraSearchStatus::evaluation_failure;
+        result.failure_message =
+            "fresh fallback verification did not match the cached candidate evaluation";
+        return with_elapsed(std::move(result), start_time);
+    }
+
+    result.status = PenroseDijkstraSearchStatus::best_feasible_below_target;
+    result.found = true;
+    result.target_reached = false;
+    result.selected_event = std::move(fresh_fallback);
+    result.parameter_adjustment_path = reconstruct_path(
+        grid, *best_fallback_key, evaluations, best_cost, discovery_order, parent);
     return with_elapsed(std::move(result), start_time);
 }
 

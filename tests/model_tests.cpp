@@ -326,14 +326,14 @@ int main() {
           "versioned reference scenario evaluates as physically feasible");
 
     const auto loaded_search = bh::load_equatorial_penrose_dijkstra_input(
-        std::filesystem::path(BH_SOURCE_DIR) / "scenarios" /
-        "equatorial_penrose_dijkstra_reference.cfg");
+        std::filesystem::path(BH_SOURCE_DIR) / "tests" / "fixtures" /
+        "equatorial_penrose_dijkstra_goal.cfg");
     near(loaded_search.search.start.split_radius_over_m, 1.09, 0.0,
          "search scenario loader preserves the declared start radius");
     near(loaded_search.search.step.split_radius_over_m, 0.01, 0.0,
          "search scenario loader preserves the declared radius step");
     near(loaded_search.search.eta_target, 0.04, 0.0,
-         "search scenario loader preserves the efficiency target");
+         "internal goal fixture preserves its low test threshold");
     check(loaded_search.search.edge_costs[0] == 1 &&
               loaded_search.search.edge_costs[1] == 1 &&
               loaded_search.search.edge_costs[2] == 1 &&
@@ -343,7 +343,7 @@ int main() {
           "search scenario loader preserves explicit unit-cost Dijkstra controls");
     const auto penrose_search =
         bh::find_penrose_dijkstra_path(loaded_search.scenario, loaded_search.search);
-    check(penrose_search.found &&
+    check(penrose_search.found && penrose_search.target_reached &&
               penrose_search.status == bh::PenroseDijkstraSearchStatus::found_goal,
           "Penrose Dijkstra search finds a physics-valid target candidate");
     check(penrose_search.parameter_adjustment_path.size() == 2,
@@ -369,11 +369,11 @@ int main() {
           "Penrose Dijkstra path retains parent and one-coordinate local-change metadata");
     near(penrose_search.parameter_adjustment_path.back().split.split_radius_over_m, 1.10, 1e-14,
          "Penrose Dijkstra derives the selected split from its integer grid key");
-    check(penrose_search.goal_event.status == bh::PenroseEventStatus::physically_feasible &&
-              penrose_search.goal_event.eta_penrose >= loaded_search.search.eta_target &&
-              penrose_search.goal_event.captured_trajectory.termination ==
+    check(penrose_search.selected_event.status == bh::PenroseEventStatus::physically_feasible &&
+              penrose_search.selected_event.eta_penrose >= loaded_search.search.eta_target &&
+              penrose_search.selected_event.captured_trajectory.termination ==
                   bh::TrajectoryTermination::crossed_horizon &&
-              penrose_search.goal_event.escaping_trajectory.termination ==
+              penrose_search.selected_event.escaping_trajectory.termination ==
                   bh::TrajectoryTermination::reached_escape_radius &&
               penrose_search.diagnostics.final_verification_evaluations == 1 &&
               penrose_search.diagnostics.nodes_evaluated == 7 &&
@@ -408,32 +408,73 @@ int main() {
               start_goal.parameter_adjustment_path.front().g_cost == 0,
           "Penrose Dijkstra returns a one-node trace when the start already meets the goal");
 
-    auto no_goal_search = loaded_search.search;
-    no_goal_search.start = {1.10, 2.07, -2.0};
-    no_goal_search.lower_bound = no_goal_search.start;
-    no_goal_search.upper_bound = no_goal_search.start;
-    no_goal_search.eta_target = 0.05;
-    const auto no_goal = bh::find_penrose_dijkstra_path(loaded_search.scenario, no_goal_search);
-    check(!no_goal.found &&
-              no_goal.status == bh::PenroseDijkstraSearchStatus::no_solution_within_bounds &&
-              no_goal.diagnostics.nodes_evaluated == 1 &&
-              no_goal.diagnostics.escaping_without_target == 1,
-          "Penrose Dijkstra reports a valid escape below an unreachable bounded target");
+    auto fallback_search = loaded_search.search;
+    fallback_search.start = {1.09, 2.07, -2.0};
+    fallback_search.lower_bound = fallback_search.start;
+    fallback_search.upper_bound = {1.10, 2.07, -2.0};
+    fallback_search.eta_target = 0.05;
+    fallback_search.max_evaluations = 2;
+    const auto fallback =
+        bh::find_penrose_dijkstra_path(loaded_search.scenario, fallback_search);
+    check(fallback.found && !fallback.target_reached &&
+              fallback.status ==
+                  bh::PenroseDijkstraSearchStatus::best_feasible_below_target &&
+              fallback.diagnostics.nodes_evaluated == 2 &&
+              fallback.diagnostics.final_verification_evaluations == 1 &&
+              fallback.parameter_adjustment_path.size() == 2 &&
+              fallback.parameter_adjustment_path.back().g_cost == 1 &&
+              fallback.parameter_adjustment_path.back().status ==
+                  bh::PenroseDijkstraNodeStatus::escaping_without_target &&
+              fallback.selected_event.status == bh::PenroseEventStatus::physically_feasible &&
+              fallback.selected_event.eta_penrose < fallback_search.eta_target,
+          "Penrose Dijkstra returns the greatest validated below-target extraction");
+    near(fallback.parameter_adjustment_path.back().split.split_radius_over_m, 1.10, 1e-14,
+         "Penrose fallback returns the best candidate in the completed bounded grid");
+
+    auto fallback_tie_search = fallback_search;
+    fallback_tie_search.start = {1.10, 2.07, -2.0};
+    fallback_tie_search.lower_bound = fallback_tie_search.start;
+    fallback_tie_search.upper_bound = fallback_tie_search.start;
+    fallback_tie_search.step = {0.01, 0.01, 2.0 * std::acos(-1.0)};
+    fallback_tie_search.upper_bound.split_angle_rad +=
+        fallback_tie_search.step.split_angle_rad;
+    const auto fallback_tie =
+        bh::find_penrose_dijkstra_path(loaded_search.scenario, fallback_tie_search);
+    check(fallback_tie.status ==
+                  bh::PenroseDijkstraSearchStatus::best_feasible_below_target &&
+              fallback_tie.diagnostics.nodes_evaluated == 2 &&
+              fallback_tie.parameter_adjustment_path.size() == 1 &&
+              fallback_tie.parameter_adjustment_path.back().g_cost == 0,
+          "Penrose fallback resolves equivalent extraction by minimum adjustment cost");
+
+    auto no_solution_search = start_goal_search;
+    no_solution_search.start = {1.99, 2.07, -2.0};
+    no_solution_search.lower_bound = no_solution_search.start;
+    no_solution_search.upper_bound = no_solution_search.start;
+    no_solution_search.eta_target = 0.15;
+    const auto no_solution =
+        bh::find_penrose_dijkstra_path(loaded_search.scenario, no_solution_search);
+    check(!no_solution.found && !no_solution.target_reached &&
+              no_solution.status ==
+                  bh::PenroseDijkstraSearchStatus::no_solution_within_bounds,
+          "Penrose Dijkstra retains no-solution status when no validated extraction exists");
 
     auto budget_limited_search = loaded_search.search;
     budget_limited_search.max_evaluations = 1;
     const auto budget_limited =
         bh::find_penrose_dijkstra_path(loaded_search.scenario, budget_limited_search);
-    check(budget_limited.status == bh::PenroseDijkstraSearchStatus::node_budget_exhausted &&
+    check(!budget_limited.found &&
+              budget_limited.status == bh::PenroseDijkstraSearchStatus::node_budget_exhausted &&
               budget_limited.diagnostics.nodes_evaluated == 1,
-          "Penrose Dijkstra stops explicitly when its evaluation budget is exhausted");
+          "Penrose Dijkstra does not return a bounded fallback from a partial node budget");
 
     auto time_limited_search = loaded_search.search;
     time_limited_search.time_budget = std::chrono::milliseconds(1);
     const auto time_limited =
         bh::find_penrose_dijkstra_path(loaded_search.scenario, time_limited_search);
-    check(time_limited.status == bh::PenroseDijkstraSearchStatus::time_budget_exhausted,
-          "Penrose Dijkstra reports a wall-clock budget exhaustion instead of a partial result");
+    check(!time_limited.found &&
+              time_limited.status == bh::PenroseDijkstraSearchStatus::time_budget_exhausted,
+          "Penrose Dijkstra does not return a bounded fallback after a wall-clock timeout");
 
     auto unattainable_search = start_goal_search;
     unattainable_search.eta_target = bh::classical_penrose_efficiency_limit();
@@ -466,8 +507,8 @@ int main() {
     const auto fine_radius =
         bh::find_penrose_dijkstra_path(loaded_search.scenario, fine_radius_search);
     check(coarse_radius.found && fine_radius.found &&
-              coarse_radius.goal_event.eta_penrose >= coarse_radius_search.eta_target &&
-              fine_radius.goal_event.eta_penrose >= fine_radius_search.eta_target,
+              coarse_radius.selected_event.eta_penrose >= coarse_radius_search.eta_target &&
+              fine_radius.selected_event.eta_penrose >= fine_radius_search.eta_target,
           "coarse and refined radius grids both reproduce a validated target-reaching result");
 
     const auto small_phase_map =
@@ -481,6 +522,11 @@ int main() {
               small_phase_map.best_event.status == bh::PenroseEventStatus::physically_feasible &&
               small_phase_map.diagnostics.final_verification_evaluations == 1,
           "bounded phase map returns a freshly verified best extraction within its full grid");
+    check(small_phase_map.best_validated_candidate &&
+              fallback.parameter_adjustment_path.back().key ==
+                  small_phase_map.best_validated_candidate->key &&
+              fallback.selected_event.eta_penrose == small_phase_map.best_event.eta_penrose,
+          "completed Dijkstra fallback agrees with the exhaustive bounded phase map");
     auto limited_phase_map_search = coarse_radius_search;
     limited_phase_map_search.max_evaluations = 1;
     const auto limited_phase_map =

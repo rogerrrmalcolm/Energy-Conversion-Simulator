@@ -298,23 +298,25 @@ void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& inp
     }
 
     if (!result.found) {
-        std::cout << "\nNo selected goal event is available for this terminated search.\n";
+        std::cout << "\nNo validated candidate is available for this terminated search.\n";
         return;
     }
 
-    const bh::PenroseDijkstraNode& goal = result.parameter_adjustment_path.back();
+    const bh::PenroseDijkstraNode& selected = result.parameter_adjustment_path.back();
     std::cout << "\nSelected candidate\n"
-              << "  status: " << bh::penrose_dijkstra_node_status_name(goal.status) << "\n"
-              << "  parameter-adjustment cost: " << goal.g_cost << "\n"
-              << "  h / f:                    " << goal.h_cost << " / " << goal.f_cost
+              << "  target reached:           "
+              << (result.target_reached ? "yes" : "no; returning bounded fallback") << "\n"
+              << "  status: " << bh::penrose_dijkstra_node_status_name(selected.status) << "\n"
+              << "  parameter-adjustment cost: " << selected.g_cost << "\n"
+              << "  h / f:                    " << selected.h_cost << " / " << selected.f_cost
               << "\n"
               << "  split parameters:         ("
-              << goal.split.split_radius_over_m << ", "
-              << goal.split.incoming_lz_over_m_m << ", "
-              << goal.split.split_angle_rad << ")\n"
-              << "  Penrose efficiency:       " << 100.0 * goal.eta_penrose << " %\n"
-              << "  net extracted energy:     " << goal.extracted_energy << "\n"
-              << "  maximum residual:         " << goal.maximum_normalized_residual << "\n\n"
+              << selected.split.split_radius_over_m << ", "
+              << selected.split.incoming_lz_over_m_m << ", "
+              << selected.split.split_angle_rad << ")\n"
+              << "  Penrose efficiency:       " << 100.0 * selected.eta_penrose << " %\n"
+              << "  net extracted energy:     " << selected.extracted_energy << "\n"
+              << "  maximum residual:         " << selected.maximum_normalized_residual << "\n\n"
               << "Parameter-adjustment trace (not a particle trajectory)\n";
     for (const bh::PenroseDijkstraNode& node : result.parameter_adjustment_path) {
         std::cout << "  g/h/f=" << node.g_cost << "/" << node.h_cost << "/" << node.f_cost
@@ -329,8 +331,8 @@ void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& inp
                   << " capture=" << termination_name(node.captured_termination)
                   << " escape=" << termination_name(node.escaping_termination) << "\n";
     }
-    std::cout << "\nPhysical goal-event diagnostics\n";
-    print_penrose_event_result(input.scenario, result.goal_event);
+    std::cout << "\nPhysical selected-event diagnostics\n";
+    print_penrose_event_result(input.scenario, result.selected_event);
 }
 
 void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& input,
