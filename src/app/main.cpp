@@ -628,23 +628,23 @@ bool better_campaign_fallback(const bh::PenroseEventResult& candidate,
     return split_parameters_less(candidate.split, current.split);
 }
 
-void record_completed_penrose_window(
+void record_penrose_search_result(
     PenroseFallbackCampaignState& campaign,
     const bh::EquatorialPenroseScenario& scenario,
     const bh::PenroseDijkstraSearchResult& result) {
-    const bool completed_without_target =
-        result.status == bh::PenroseDijkstraSearchStatus::best_feasible_below_target ||
-        result.status == bh::PenroseDijkstraSearchStatus::no_solution_within_bounds;
-    if (!completed_without_target) {
-        return;
-    }
-
     if (campaign.scenario && !same_penrose_scenario(*campaign.scenario, scenario)) {
         campaign = {};
         std::cout << "\nFallback history reset because the fixed Penrose scenario changed.\n";
     }
     if (!campaign.scenario) {
         campaign.scenario = scenario;
+    }
+
+    const bool completed_without_target =
+        result.status == bh::PenroseDijkstraSearchStatus::best_feasible_below_target ||
+        result.status == bh::PenroseDijkstraSearchStatus::no_solution_within_bounds;
+    if (!completed_without_target) {
+        return;
     }
 
     ++campaign.completed_no_target_windows;
@@ -868,7 +868,7 @@ void run_interactive_penrose_search(InteractiveSession& session) {
         const bh::PenroseDijkstraSearchResult result =
             bh::find_penrose_dijkstra_path(request.scenario, request.search);
         print_penrose_dijkstra_result(request, result);
-        record_completed_penrose_window(
+        record_penrose_search_result(
             session.penrose_fallback_campaign, request.scenario, result);
         print_penrose_fallback_campaign(session.penrose_fallback_campaign);
     } catch (const std::invalid_argument& error) {

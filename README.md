@@ -1,69 +1,350 @@
 # Black Hole Energy Simulation
 
-A deterministic C++20 engine for Kerr rotational-energy calculations,
-equatorial geodesics, idealized Penrose-process validation, and bounded graph
-search over particle-split parameters.
+This project is a deterministic C++20 scientific-computing engine for studying
+idealized energy extraction from rotating black holes. It combines algebraic
+Kerr energy estimates, numerical geodesic integration, a locally
+four-momentum-conserving Penrose split, and graph search over candidate split
+parameters. The current implementation is a scalar, equatorial research
+baseline. It calculates theoretical scenarios; it does not claim that energy
+has been extracted from an observed black hole or can be delivered to Earth.
 
-## What It Does
+## Model Pipeline
 
-- Calculates total mass-energy, irreducible mass, and the theoretical Kerr
-  rotational-energy reservoir, including mass/spin uncertainty ranges.
-- Integrates equatorial Kerr trajectories with adaptive RK4 and radial-potential
-  event detection.
-- Models a local two-fragment Penrose split in a ZAMO frame while checking mass
-  shells, four-momentum conservation, negative-energy capture, outward escape,
-  and numerical residuals.
-- Searches nodes `(split radius, Lz, split angle)` using deterministic Dijkstra.
-
-The configured target is **15% net Penrose efficiency**:
-
-```text
-eta = (E_escape - E_input) / E_input
+```mermaid
+flowchart LR
+    A["Algebraic Kerr model"] --> K["Kerr geometry and geodesics"]
+    K --> P["Penrose split evaluator"]
+    P --> D["Dijkstra or exhaustive phase map"]
+    D --> R["Validated goal or bounded fallback"]
+    T["Reduced toy-plasma model"] -. "separate educational estimate" .-> R
 ```
 
-## Dijkstra Search
+### 1. Algebraic Kerr Energy Model
 
-Each edge changes exactly one parameter by one configured step and costs one.
-Therefore `h = 0`, `f = g`, and Dijkstra returns the qualifying parameters with
-the fewest unit changes from the starting node.
+The algebraic model answers the first question: does the declared black hole
+have rotational energy available in principle? Its inputs are SI mass `M` in
+kilograms and dimensionless spin `a_star`, constrained by
+`M > 0` and `0 <= a_star < 1`.
+
+The irreducible-mass fraction and irreducible mass are
+
+```text
+f_irr = sqrt((1 + sqrt(1 - a_star^2)) / 2)
+M_irr = M * f_irr
+```
+
+The total mass-energy, rotational fraction, and theoretical rotational-energy
+reservoir are
+
+```text
+E_mass = M * c^2
+f_rot  = 1 - f_irr
+E_rot  = E_mass * f_rot = (M - M_irr) * c^2
+```
+
+`M_irr` is the mass that cannot be removed by ideal reversible spin extraction.
+When spin is zero, `M_irr = M` and `E_rot = 0`. As spin approaches the
+sub-extremal limit, the rotational fraction approaches about 29.29%. That is a
+reservoir limit, not the efficiency of one Penrose event.
+
+The model also reports local spin sensitivity:
+
+```text
+dE_rot/da_star = M*c^2*a_star /
+                 (4*sqrt(1-a_star^2)*f_irr)
+```
+
+For uncertainty ranges, the engine evaluates ordered lower, central, and upper
+mass/spin pairs and reports asymmetric differences around the central result.
+All inputs and outputs are checked for finite values and overflow.
+
+### 2. Schwarzschild Reference Model
+
+The Schwarzschild solver is a nonrotating reference used to validate basic
+trajectory integration. It models an equatorial timelike orbit using specific
+energy `epsilon` and specific angular momentum `ell`. In geometrized units
+`G = c = 1`, its radial potential is
+
+```text
+R_S(r) = epsilon^2 - (1 - 2M/r)*(1 + ell^2/r^2)
+(dr/dtau)^2 = R_S(r)
+```
+
+`R_S > 0` permits radial motion, `R_S = 0` marks a turning boundary, and
+`R_S < 0` is forbidden for that orbit. The remaining differential equations
+are
+
+```text
+dphi/dtau = ell/r^2
+dt/dtau   = epsilon/(1 - 2M/r)
+d2r/dtau2 = -M/r^2 + ell^2/r^3 - 3M*ell^2/r^4
+```
+
+A fixed-step fourth-order Runge-Kutta method advances the state. Interpolation
+places horizon-crossing and escape events on their configured boundaries. The
+solver continuously measures the residual between radial velocity squared and
+the radial potential, making it a useful correctness oracle before rotation
+and frame dragging are introduced.
+
+### 3. Equatorial Kerr Geodesic Model
+
+The Kerr model determines whether incoming, captured, and escaping particle
+paths are physically allowed around a rotating black hole. Internal values use
+geometrized units. The dimensional spin length is `a = M*a_star`, and
+
+```text
+Delta = r^2 - 2Mr + a^2
+r_plus  = M + sqrt(M^2 - a^2)
+r_minus = M - sqrt(M^2 - a^2)
+r_static(theta) = M + sqrt(M^2 - a^2*cos(theta)^2)
+```
+
+At the equator, `r_static = 2M`. The open region
+`r_plus < r < 2M` is the equatorial ergosphere and is the permitted split
+domain. The event horizon and ergosphere are separate boundaries: a captured
+fragment must cross `r_plus`, while a split merely has to occur inside the
+ergosphere and outside the horizon.
+
+For conserved energy `E`, axial angular momentum `Lz`, rest mass `mu`, and
+Carter constant `Q`, define
+
+```text
+P = E*(r^2 + a^2) - a*Lz
+B = Lz - a*E
+R_K(r) = P^2 - Delta*(mu^2*r^2 + B^2 + Q)
+```
+
+The current equatorial model requires `Q = 0`. With `Sigma = r^2`, the
+contravariant momentum components are
+
+```text
+p^r   = direction*sqrt(R_K)/Sigma
+p^t   = (a*B + (r^2+a^2)*P/Delta)/Sigma
+p^phi = (B + a*P/Delta)/Sigma
+```
+
+The engine rejects past-directed states with `p^t <= 0`. As in the
+Schwarzschild model, `R_K < 0` is forbidden and `R_K = 0` identifies a radial
+turning point. The integrator samples for the first forbidden interval and
+uses bisection to localize its boundary rather than allowing a numerical step
+to jump across it.
+
+Kerr trajectories use adaptive RK4:
+
+```text
+y_next = y + h*(k1 + 2k2 + 2k3 + k4)/6
+```
+
+One full step is compared with two half steps. The normalized local error is
+divided by `2^4 - 1 = 15`; steps with error above one are rejected, and later
+step sizes are adjusted with a safety factor. Boundary intersections are
+localized through interpolation or repeated step bisection. Diagnostics record
+accepted and rejected steps, final step size, maximum normalized error, and the
+radial first-integral residual.
+
+### 4. Penrose Split Model
+
+The Penrose evaluator connects local vector mechanics to global Kerr
+trajectories. It accepts one fixed scenario and three candidate parameters:
+normalized split radius, normalized incoming `Lz`, and local split angle.
+
+At the split radius it constructs the equatorial metric. With
+
+```text
+A = (r^2 + a^2)^2 - a^2*Delta
+g_tt = -(1 - 2M/r)       g_tphi = -2Ma/r
+g_phiphi = A/r^2         g_rr   = r^2/Delta
+alpha = r*sqrt(Delta)/sqrt(A)
+omega = 2Mar/A
+```
+
+`alpha` is the lapse and `omega` is the frame-dragging angular velocity. The
+incoming coordinate momentum is transformed into a local zero-angular-momentum
+observer, or ZAMO, frame:
+
+```text
+p_local^t   = alpha*p^t
+p_local^r   = r*p^r/sqrt(Delta)
+p_local^phi = sqrt(g_phiphi)*(p^phi - omega*p^t)
+```
+
+The local frame uses the Minkowski inner product
+`u dot v = -u_t*v_t + u_r*v_r + u_phi*v_phi`. The parent four-velocity is
+normalized, radial and azimuthal seed vectors are projected orthogonally to
+it, and a Gram-Schmidt step creates an orthonormal split basis.
+
+For the current equal-daughter model,
+
+```text
+E_daughter = m_parent/2
+p_daughter = sqrt(E_daughter^2 - m_fragment^2)
+n = cos(angle)*e_radial + sin(angle)*e_azimuthal
+p_1 = E_daughter*u_parent + p_daughter*n
+p_2 = E_daughter*u_parent - p_daughter*n
+```
+
+The opposite spatial terms guarantee local four-momentum conservation by
+construction. The evaluator transforms both daughters back to Boyer-Lindquist
+coordinates, calculates `E = -p_t` and `Lz = p_phi`, checks their mass shells,
+reconstructs their Kerr momenta, and measures all residuals.
+
+A feasible event requires one future-directed fragment with negative energy at
+infinity and inward radial momentum, plus one positive-energy outward fragment.
+The negative-energy trajectory must cross the horizon and the positive-energy
+trajectory must reach the configured escape radius. Efficiency and net
+extraction are
+
+```text
+eta_penrose = (E_escape - E_input)/E_input
+E_extracted = max(0, E_escape - E_input)
+```
+
+The public baseline uses massless daughters. It is an idealized test-particle
+calculation, not yet an atomic-nucleus, electromagnetic, radiation-reaction, or
+plasma interaction model.
+
+### 5. Dijkstra Search And Phase Map
+
+Each search node is an integer grid key that maps to
+`(split radius, Lz, split angle)`. Integer keys avoid duplicate states caused
+by floating-point accumulation. A node has up to six neighbors because one
+coordinate changes by one positive or negative step. Every edge currently has
+cost one, so
+
+```text
+g = number of parameter steps from the start
+h = 0
+f = g + h = g
+```
 
 ```mermaid
 flowchart TD
     S["Start node<br/>(r, Lz, angle), g=0"] --> Q["Priority queue<br/>lowest g first"]
     Q --> P["Pop next node"]
     P --> E["Run Kerr + Penrose evaluator"]
-    E -->|"Valid and eta >= 15%"| G["found_goal<br/>minimum-change parameters"]
+    E -->|"All checks pass and eta >= 15%"| G["found_goal<br/>minimum-change parameters"]
     E -->|"Not a goal"| N["Generate up to 6 neighbors<br/>r +/- step, Lz +/- step, angle +/- step"]
     N --> Q
-    Q -->|"Queue empty"| F["Best validated fallback<br/>for this window"]
-    F --> A["Compare with overall fallback<br/>from completed windows"]
+    Q -->|"Queue empty"| F["Best validated fallback<br/>in this complete window"]
+    F --> C["Compare with overall fallback<br/>from completed windows"]
 ```
 
-`found_goal` means the selected parameters pass every engine requirement:
-positive net extraction, efficiency of at least 15%, conservation and mass-shell
-tolerances, horizon capture of the negative-energy fragment, and escape of the
-positive-energy fragment.
+`std::priority_queue` selects the lowest `g`; ordered maps store best costs,
+parents, discovery order, and compact evaluations. Stable key and discovery
+ordering make ties deterministic. A `found_goal` tuple is not accepted merely
+because its efficiency is high. It must be inside the search domain, pass the
+Penrose evaluator, conserve momentum within tolerance, capture the intended
+fragment, escape the other fragment, and satisfy `eta_penrose >= 0.15`.
 
-## Bounded Windows
+One scalar window is limited to 2,700 nodes. CLI runs require enough evaluation
+budget for every declared node and disable wall-clock termination. Therefore,
+if no goal is found, the connected grid has been exhausted and the engine can
+return its highest validated below-target fallback. The interactive session
+compares these fallbacks across completed windows and resets the history when
+the fixed physical scenario changes. This guarantee covers grid points only;
+no finite grid proves that a qualifying continuous point between steps does not
+exist.
 
-One scalar window may contain at most **2,700 nodes**. Split-radius bounds must
-remain strictly between the outer horizon and equatorial ergosphere boundary.
-CLI searches cannot use a node or time budget that could skip a declared grid
-node.
+The separate phase-map function evaluates every key in deterministic order and
+reports the best validated extraction in that bounded grid. Dijkstra solves the
+minimum-adjustment threshold problem; the phase map answers the different
+question of which tested point has the greatest extraction.
 
-If a completed window misses 15%, it returns its highest validated fallback.
-The interactive session retains the best fallback across completed windows and
-resets that history if the fixed physical scenario changes. The user can then
-submit a new parameter window below or above a previous interval.
+The public `95 x 5 x 5` scenario contains 2,375 nodes. Its current best result
+is 9.065063%, so it returns `best_feasible_below_target` rather than claiming a
+15% goal.
 
-This guarantees coverage of configured grid points only. Smaller steps are
-required to test values between them.
+### 6. Reduced Toy-Plasma Model
 
-The public `95 x 5 x 5` search contains 2,375 nodes. Its current best validated
-result is **9.065063%**, so it reports `best_feasible_below_target`, not
-`found_goal`.
+The plasma component is a transparent zero-dimensional scaling estimate. For
+magnetic field `B`, mass density `rho`, flow area `A_flow`, and SI vacuum
+permeability `mu_0`, it calculates
 
-## Build And Run
+```text
+sigma = B^2/(mu_0*rho*c^2)
+v_A = c*sqrt(sigma/(1 + sigma))
+P_raw = (B^2/mu_0)*v_A*A_flow
+coupling = clamp(a_star^2*sigma/(1 + sigma), 0, 1)
+P_out = P_raw*coupling
+E_out = P_out*duration
+```
+
+The coupling is explicitly heuristic. This model does not solve conservation
+laws on a grid, separate matter and Poynting fluxes, evolve magnetic geometry,
+or qualify as MHD or GRMHD. It remains separate from the validated Penrose
+energy ledger.
+
+## Computational Geometry And Vector Math
+
+This project primarily uses **differential geometry and numerical geometry**,
+not classical computational-geometry structures such as polygon meshes,
+convex hulls, or spatial trees. Its geometric computations still have clear
+algorithmic roles.
+
+The Kerr metric defines curved-spacetime distances and coordinate coupling.
+The horizon and static limit are implicit geometric surfaces; in the
+equatorial restriction they become radial boundaries. Trajectory steps are
+tested for intersections with horizon, escape, target-radius, and turning-point
+boundaries. Linear interpolation localizes simple crossings, while bisection
+localizes Kerr turning points and adaptive RK4 event times.
+
+The ZAMO calculation is vector math in a local orthonormal frame. It transforms
+vectors between coordinate and local components, uses an indefinite Minkowski
+dot product, projects spatial seeds orthogonally to the parent four-velocity,
+normalizes the resulting basis, and constructs daughter momenta as linear
+combinations. Vector addition proves local momentum balance, while metric
+contraction checks the invariant mass shell. The parameter search adds a second
+geometry: a discrete three-dimensional lattice whose axis-aligned adjacency
+becomes the Dijkstra graph.
+
+## Performance Engineering
+
+Correct scalar execution is the performance reference. The current code is
+single-threaded and contains no AVX, SSE, or portable-SIMD kernel, so it makes
+no parallel or SIMD speedup claim. The 2,700-node ceiling keeps present scalar
+runs bounded while later backends are developed.
+
+Several implemented choices already support reliable performance work:
+
+- canonical integer keys eliminate repeated floating-point states;
+- compact cached candidate records avoid retaining three full trajectories for
+  every Dijkstra node;
+- only the selected event is freshly recomputed and returned with complete
+  trajectories;
+- trajectory vectors reserve expected capacity;
+- adaptive stepping rejects inaccurate work and increases the step in smooth
+  regions;
+- horizon, escape, and turning-point events terminate trajectories early;
+- explicit diagnostics separate graph work from physics evaluations and make
+  optimization regressions observable.
+
+Graph bookkeeping costs approximately
+`O((V + E) log V)` with the binary heap and ordered maps, but geodesic
+integration dominates runtime. The observed 2,375-node search took about 64
+seconds on one tested scalar x86-64 run; this is a reproducibility observation,
+not a benchmark distribution.
+
+The next performance milestone is to separate preparation of the incoming
+parent state from angle-dependent fragment evaluation. Nodes sharing radius
+and `Lz` currently repeat the incoming integration. Caching that prepared ZAMO
+state would remove substantial duplicate work before introducing parallelism.
+
+After profiling, independent phase-map tiles can be distributed across a fixed
+`std::jthread` worker pool and merged by canonical key for deterministic output.
+A structure-of-arrays batch would then store contiguous radii, energies,
+angular momenta, and spins. SIMD is best applied to uniform arithmetic such as
+`Delta`, radial-potential, metric, coordinate-transform, and residual
+evaluation. Adaptive trajectories with different step counts should not be
+forced into the same vector lanes without grouping or active-lane compaction.
+
+Benchmarks must compare identical validated inputs in scalar-single-thread,
+scalar-multithread, SIMD-single-thread, and SIMD-multithread modes. Required
+measurements include throughput, median and tail latency, scaling efficiency,
+vector ISA, compiler flags, cache misses, branch misses, and numerical
+agreement with the scalar oracle. Only measured improvements that preserve
+goal selection and residual tolerances should become performance claims.
+
+## Build And Verify
 
 ```powershell
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -73,11 +354,7 @@ ctest --test-dir build --output-on-failure
 .\build\black_hole_demo.exe --search-penrose .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
 ```
 
-All **13 tests** currently pass.
-
-## Scope
-
-The current baseline is equatorial (`Q = 0`), neutral, idealized, and
-single-threaded. Multithreading, SIMD, full Kerr motion, charged particles, and
-validated MHD/GRMHD are future work. The toy-plasma calculation is not a GRMHD
-simulation, and no energy-delivery feasibility is claimed.
+All 13 current tests pass. They cover algebraic limits and uncertainty, radial
+potentials, integration events and residuals, Penrose conservation and
+capture/escape, deterministic search behavior, the 2,700-node contract,
+cross-window fallback aggregation, CLI validation, and CMake package use.
