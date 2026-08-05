@@ -72,6 +72,9 @@ if(BH_BUILD_TESTS)
     add_interactive_cli_test(cli_interactive_shared_workflow interactive_shared_workflow.txt
         "Algebraic Kerr rotational-energy reservoir|Equatorial Kerr trajectory|status: physically_feasible|Reduced toy-plasma transport estimate")
 
+    add_interactive_cli_test(cli_interactive_penrose_search interactive_penrose_search.txt
+        "Accepted search window: 2 x 1 x 1 = 2 nodes|target Penrose efficiency: 1.500000e+01 %|complete discrete window contains no candidate reaching|completed no-target windows: 2|overall best parameters:     (1.120000e+00, 2.080000e+00, -1.980000e+00)|overall best efficiency:     7.734502e+00 %")
+
     add_test(NAME cli_penrose_reference COMMAND black_hole_demo --scenario
         "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/equatorial_penrose_reference.cfg")
     set_tests_properties(cli_penrose_reference PROPERTIES
@@ -86,6 +89,11 @@ if(BH_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/equatorial_penrose_dijkstra_smoke.cfg")
     set_tests_properties(cli_penrose_phase_map PROPERTIES
         PASS_REGULAR_EXPRESSION "status: completed")
+
+    add_test(NAME cli_penrose_complete_window_fallback COMMAND black_hole_demo --search-penrose
+        "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/equatorial_penrose_dijkstra_smoke.cfg")
+    set_tests_properties(cli_penrose_complete_window_fallback PROPERTIES
+        PASS_REGULAR_EXPRESSION "complete discrete window contains no candidate reaching")
 
     add_test(NAME cli_invalid_penrose_scenario COMMAND ${CMAKE_COMMAND}
         "-DEXECUTABLE=$<TARGET_FILE:black_hole_demo>"

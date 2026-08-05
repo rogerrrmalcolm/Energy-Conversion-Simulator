@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -143,7 +144,8 @@ void print_usage(const std::string_view program_name) {
               << "The scenario command evaluates one declared equatorial Penrose event."
                  " It does not search or optimize parameters.\n"
               << "The search-penrose command runs Dijkstra over a declared bounded parameter"
-                 " grid and calls the Penrose evaluator for each candidate.\n"
+                 " grid and calls the Penrose evaluator for each candidate. CLI search windows"
+                 " are limited to 2700 nodes and cannot use a partial node or time budget.\n"
               << "The map-penrose command exhaustively evaluates the declared bounded grid"
                  " and reports the greatest validated extraction found within that grid.\n"
               << "The toy-plasma command is a reduced, ideal-MHD-inspired transport scaling,"
@@ -237,6 +239,18 @@ void print_penrose_event_result(const bh::EquatorialPenroseScenario& scenario,
                  " astrophysical energy or a delivery model.\n";
 }
 
+void print_new_parameter_window_guidance(
+    const bh::PenroseDijkstraSearchConfig& search) {
+    std::cout << "The complete discrete window contains no candidate reaching "
+              << 100.0 * search.eta_target << "%. Run a new window with at least one"
+                 " split-radius, Lz, or angle interval below or above the current interval;"
+                 " split-radius bounds must remain inside the ergosphere. Keep the new window"
+                 " at or below "
+              << bh::max_penrose_search_nodes
+              << " nodes. Values between grid points require smaller steps and a"
+                 " correspondingly smaller window.\n";
+}
+
 void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& input,
                                    const bh::PenroseDijkstraSearchResult& result) {
     const bh::PenroseDijkstraSearchConfig& search = input.search;
@@ -269,6 +283,7 @@ void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& inp
               << "  edge costs:               (" << search.edge_costs[0] << ", "
               << search.edge_costs[1] << ", " << search.edge_costs[2] << ")\n"
               << "  maximum evaluations:      " << search.max_evaluations << "\n"
+              << "  scalar window node limit: " << bh::max_penrose_search_nodes << "\n"
               << "  time budget:              " << search.time_budget.count()
               << " ms (0 = disabled)\n\n"
               << "Search diagnostics\n"
@@ -299,6 +314,9 @@ void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& inp
 
     if (!result.found) {
         std::cout << "\nNo validated candidate is available for this terminated search.\n";
+        if (result.status == bh::PenroseDijkstraSearchStatus::no_solution_within_bounds) {
+            print_new_parameter_window_guidance(search);
+        }
         return;
     }
 
@@ -318,6 +336,11 @@ void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& inp
               << "  net extracted energy:     " << selected.extracted_energy << "\n"
               << "  maximum residual:         " << selected.maximum_normalized_residual << "\n\n"
               << "Parameter-adjustment trace (not a particle trajectory)\n";
+    if (result.target_reached) {
+        std::cout << "  Goal contract: this parameter set passed the Penrose evaluator,"
+                     " capture/escape checks, conservation tolerance, and the configured"
+                     " efficiency threshold.\n";
+    }
     for (const bh::PenroseDijkstraNode& node : result.parameter_adjustment_path) {
         std::cout << "  g/h/f=" << node.g_cost << "/" << node.h_cost << "/" << node.f_cost
                   << " key=(" << node.key[0] << ", " << node.key[1] << ", " << node.key[2]
@@ -330,6 +353,10 @@ void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& inp
                   << node.extracted_energy << " residual=" << node.maximum_normalized_residual
                   << " capture=" << termination_name(node.captured_termination)
                   << " escape=" << termination_name(node.escaping_termination) << "\n";
+    }
+    if (result.status == bh::PenroseDijkstraSearchStatus::best_feasible_below_target) {
+        std::cout << "\n";
+        print_new_parameter_window_guidance(search);
     }
     std::cout << "\nPhysical selected-event diagnostics\n";
     print_penrose_event_result(input.scenario, result.selected_event);
@@ -358,6 +385,7 @@ void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& in
               << "  nodes evaluated:          " << diagnostics.nodes_evaluated << "\n"
               << "  retained map entries:     " << result.candidates.size() << "\n"
               << "  maximum evaluations:      " << search.max_evaluations << "\n"
+              << "  scalar window node limit: " << bh::max_penrose_search_nodes << "\n"
               << "  elapsed:                  "
               << std::chrono::duration<double, std::milli>(diagnostics.elapsed).count()
               << " ms\n"
@@ -375,6 +403,9 @@ void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& in
     if (!result.best_validated_candidate) {
         std::cout << "\nNo positive, physically validated extraction was found in the"
                      " evaluated portion of this grid.\n";
+        if (result.complete) {
+            print_new_parameter_window_guidance(search);
+        }
         return;
     }
 
@@ -393,6 +424,11 @@ void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& in
         std::cout << "\nThis is not a maximum over the full declared grid because the map"
                      " terminated early.\n";
         return;
+    }
+
+    if (diagnostics.goal_feasible == 0) {
+        std::cout << "\n";
+        print_new_parameter_window_guidance(search);
     }
 
     std::cout << "\nPhysical best-event diagnostics\n";
@@ -458,6 +494,7 @@ void run_penrose_dijkstra(const int argc, char* argv[]) {
 
     const bh::EquatorialPenroseDijkstraInput input =
         bh::load_equatorial_penrose_dijkstra_input(argv[2]);
+    bh::require_complete_penrose_search_window(input.scenario, input.search);
     const bh::PenroseDijkstraSearchResult result =
         bh::find_penrose_dijkstra_path(input.scenario, input.search);
     print_penrose_dijkstra_result(input, result);
@@ -470,6 +507,7 @@ void run_penrose_phase_map(const int argc, char* argv[]) {
 
     const bh::EquatorialPenroseDijkstraInput input =
         bh::load_equatorial_penrose_dijkstra_input(argv[2]);
+    bh::require_complete_penrose_search_window(input.scenario, input.search);
     const bh::PenrosePhaseMapResult result =
         bh::evaluate_penrose_phase_map(input.scenario, input.search);
     print_penrose_phase_map_result(input, result);
@@ -509,6 +547,20 @@ struct PenroseEventState {
     double split_angle_rad{-2.0};
 };
 
+struct PenroseSearchState {
+    bh::PenroseSplitParameters start{1.09, 2.07, -2.0};
+    bh::PenroseSplitParameters lower_bound{1.09, 2.07, -2.0};
+    bh::PenroseSplitParameters upper_bound{1.10, 2.07, -2.0};
+    bh::PenroseSplitParameters step{0.01, 0.01, 0.01};
+};
+
+struct PenroseFallbackCampaignState {
+    std::optional<bh::EquatorialPenroseScenario> scenario{};
+    std::size_t completed_no_target_windows{};
+    std::size_t fallback_windows{};
+    std::optional<bh::PenroseEventResult> best_fallback{};
+};
+
 struct ToyPlasmaState {
     double magnetic_field_tesla{1.0};
     double mass_density_kg_m3{1.0e-8};
@@ -521,8 +573,141 @@ struct InteractiveSession {
     SharedTrajectoryControl trajectory_control{};
     KerrPathState kerr{};
     PenroseEventState penrose{};
+    PenroseSearchState penrose_search{};
+    PenroseFallbackCampaignState penrose_fallback_campaign{};
     ToyPlasmaState toy_plasma{};
 };
+
+bool same_penrose_scenario(const bh::EquatorialPenroseScenario& left,
+                           const bh::EquatorialPenroseScenario& right) {
+    return left.black_hole_mass == right.black_hole_mass &&
+           left.dimensionless_spin == right.dimensionless_spin &&
+           left.parent_rest_mass == right.parent_rest_mass &&
+           left.fragment_rest_mass == right.fragment_rest_mass &&
+           left.incoming_specific_energy == right.incoming_specific_energy &&
+           left.initial_radius_over_m == right.initial_radius_over_m &&
+           left.escape_radius_over_m == right.escape_radius_over_m &&
+           left.integration_step == right.integration_step &&
+           left.max_integration_steps == right.max_integration_steps &&
+           left.integration_control.absolute_tolerance ==
+               right.integration_control.absolute_tolerance &&
+           left.integration_control.relative_tolerance ==
+               right.integration_control.relative_tolerance &&
+           left.integration_control.minimum_step ==
+               right.integration_control.minimum_step &&
+           left.residual_tolerance == right.residual_tolerance;
+}
+
+bool split_parameters_less(const bh::PenroseSplitParameters& left,
+                           const bh::PenroseSplitParameters& right) {
+    if (left.split_radius_over_m != right.split_radius_over_m) {
+        return left.split_radius_over_m < right.split_radius_over_m;
+    }
+    if (left.incoming_lz_over_m_m != right.incoming_lz_over_m_m) {
+        return left.incoming_lz_over_m_m < right.incoming_lz_over_m_m;
+    }
+    return left.split_angle_rad < right.split_angle_rad;
+}
+
+bool better_campaign_fallback(const bh::PenroseEventResult& candidate,
+                              const bh::PenroseEventResult& current) {
+    constexpr double comparison_tolerance = 1.0e-12;
+    if (candidate.eta_penrose > current.eta_penrose + comparison_tolerance) {
+        return true;
+    }
+    if (std::abs(candidate.eta_penrose - current.eta_penrose) > comparison_tolerance) {
+        return false;
+    }
+    if (candidate.extracted_energy > current.extracted_energy + comparison_tolerance) {
+        return true;
+    }
+    if (std::abs(candidate.extracted_energy - current.extracted_energy) >
+        comparison_tolerance) {
+        return false;
+    }
+    return split_parameters_less(candidate.split, current.split);
+}
+
+void record_completed_penrose_window(
+    PenroseFallbackCampaignState& campaign,
+    const bh::EquatorialPenroseScenario& scenario,
+    const bh::PenroseDijkstraSearchResult& result) {
+    const bool completed_without_target =
+        result.status == bh::PenroseDijkstraSearchStatus::best_feasible_below_target ||
+        result.status == bh::PenroseDijkstraSearchStatus::no_solution_within_bounds;
+    if (!completed_without_target) {
+        return;
+    }
+
+    if (campaign.scenario && !same_penrose_scenario(*campaign.scenario, scenario)) {
+        campaign = {};
+        std::cout << "\nFallback history reset because the fixed Penrose scenario changed.\n";
+    }
+    if (!campaign.scenario) {
+        campaign.scenario = scenario;
+    }
+
+    ++campaign.completed_no_target_windows;
+    if (result.status != bh::PenroseDijkstraSearchStatus::best_feasible_below_target) {
+        return;
+    }
+
+    ++campaign.fallback_windows;
+    if (!campaign.best_fallback ||
+        better_campaign_fallback(result.selected_event, *campaign.best_fallback)) {
+        campaign.best_fallback = result.selected_event;
+    }
+}
+
+void print_penrose_fallback_campaign(const PenroseFallbackCampaignState& campaign) {
+    std::cout << "\nOverall fallback across completed no-target windows\n"
+              << "  completed no-target windows: "
+              << campaign.completed_no_target_windows << "\n"
+              << "  windows with a fallback:     " << campaign.fallback_windows << "\n";
+    if (!campaign.best_fallback) {
+        std::cout << "  overall best fallback:       none\n";
+        return;
+    }
+
+    const bh::PenroseEventResult& best = *campaign.best_fallback;
+    std::cout << "  overall best parameters:     ("
+              << best.split.split_radius_over_m << ", "
+              << best.split.incoming_lz_over_m_m << ", "
+              << best.split.split_angle_rad << ")\n"
+              << "  overall best efficiency:     " << 100.0 * best.eta_penrose << " %\n"
+              << "  overall net extraction:      " << best.extracted_energy << "\n"
+              << "  overall maximum residual:    " << best.maximum_normalized_residual << "\n";
+}
+
+bh::EquatorialPenroseScenario make_interactive_penrose_scenario(
+    const InteractiveSession& session) {
+    const PenroseEventState& input = session.penrose;
+    return {normalized_kerr_mass,
+            session.black_hole.dimensionless_spin,
+            input.parent_rest_mass,
+            input.fragment_rest_mass,
+            input.incoming_specific_energy,
+            input.initial_radius_over_m,
+            input.escape_radius_over_m,
+            session.trajectory_control.maximum_step,
+            session.trajectory_control.maximum_steps,
+            session.trajectory_control.integration_control,
+            input.residual_tolerance};
+}
+
+void prompt_penrose_scenario_inputs(InteractiveSession& session) {
+    PenroseEventState& input = session.penrose;
+    input.parent_rest_mass = prompt_double("Parent rest mass", input.parent_rest_mass);
+    input.fragment_rest_mass = prompt_double("Fragment rest mass", input.fragment_rest_mass);
+    input.incoming_specific_energy = prompt_double("Incoming specific energy",
+                                                    input.incoming_specific_energy);
+    input.initial_radius_over_m = prompt_double("Initial radius r / M",
+                                                input.initial_radius_over_m);
+    input.escape_radius_over_m = prompt_double("Escape radius r / M",
+                                               input.escape_radius_over_m);
+    input.residual_tolerance = prompt_double("Conservation residual tolerance",
+                                             input.residual_tolerance);
+}
 
 void configure_shared_black_hole(InteractiveSession& session) {
     std::cout << "\nShared black-hole configuration\n"
@@ -603,39 +788,93 @@ void run_interactive_penrose(InteractiveSession& session) {
     std::cout << "\nRestricted equatorial Penrose event input\n"
               << "  The shared black-hole mass and spin are already loaded.\n"
               << "  Enter only particle, split, and event-boundary parameters.\n";
+    prompt_penrose_scenario_inputs(session);
     PenroseEventState& input = session.penrose;
-    input.parent_rest_mass = prompt_double("Parent rest mass", input.parent_rest_mass);
-    input.fragment_rest_mass = prompt_double("Fragment rest mass", input.fragment_rest_mass);
-    input.incoming_specific_energy = prompt_double("Incoming specific energy",
-                                                    input.incoming_specific_energy);
-    input.initial_radius_over_m = prompt_double("Initial radius r / M",
-                                                input.initial_radius_over_m);
-    input.escape_radius_over_m = prompt_double("Escape radius r / M",
-                                               input.escape_radius_over_m);
-    input.residual_tolerance = prompt_double("Conservation residual tolerance",
-                                             input.residual_tolerance);
     input.split_radius_over_m = prompt_double("Split radius r_split / M",
                                               input.split_radius_over_m);
     input.incoming_lz_over_m_m = prompt_double("Incoming angular momentum Lz / (m M)",
                                                input.incoming_lz_over_m_m);
     input.split_angle_rad = prompt_double("Split angle [radians]", input.split_angle_rad);
 
-    const bh::EquatorialPenroseScenario scenario{
-        normalized_kerr_mass,
-        session.black_hole.dimensionless_spin,
-        input.parent_rest_mass,
-        input.fragment_rest_mass,
-        input.incoming_specific_energy,
-        input.initial_radius_over_m,
-        input.escape_radius_over_m,
-        session.trajectory_control.maximum_step,
-        session.trajectory_control.maximum_steps,
-        session.trajectory_control.integration_control,
-        input.residual_tolerance};
+    const bh::EquatorialPenroseScenario scenario =
+        make_interactive_penrose_scenario(session);
     const bh::PenroseSplitParameters split{
         input.split_radius_over_m, input.incoming_lz_over_m_m, input.split_angle_rad};
     const bh::PenroseEventResult result = bh::evaluate_equatorial_penrose_event(scenario, split);
     print_penrose_event_result(scenario, result);
+}
+
+void run_interactive_penrose_search(InteractiveSession& session) {
+    const double spin_length = bh::kerr_spin_length(
+        normalized_kerr_mass, session.black_hole.dimensionless_spin);
+    const double horizon = bh::kerr_outer_horizon(normalized_kerr_mass, spin_length);
+    const double static_limit = bh::kerr_static_limit_radius(
+        normalized_kerr_mass, spin_length, 1.57079632679489661923);
+    std::cout << "\nBounded 15% Penrose search input\n"
+              << "  The search evaluates at most " << bh::max_penrose_search_nodes
+              << " discrete nodes in one scalar window.\n"
+              << "  Valid split-radius interval: " << horizon << " < r_split / M < "
+              << static_limit << "\n"
+              << "  Only split-radius bounds are restricted by this interval.\n";
+    prompt_penrose_scenario_inputs(session);
+
+    PenroseSearchState& input = session.penrose_search;
+    input.start.split_radius_over_m = prompt_double(
+        "Starting split radius r_split / M", input.start.split_radius_over_m);
+    input.start.incoming_lz_over_m_m = prompt_double(
+        "Starting angular momentum Lz / (m M)", input.start.incoming_lz_over_m_m);
+    input.start.split_angle_rad = prompt_double(
+        "Starting split angle [radians]", input.start.split_angle_rad);
+
+    input.lower_bound.split_radius_over_m = prompt_double(
+        "Split-radius lower bound", input.lower_bound.split_radius_over_m);
+    input.upper_bound.split_radius_over_m = prompt_double(
+        "Split-radius upper bound", input.upper_bound.split_radius_over_m);
+    input.step.split_radius_over_m = prompt_double(
+        "Split-radius step", input.step.split_radius_over_m);
+    input.lower_bound.incoming_lz_over_m_m = prompt_double(
+        "Lz lower bound", input.lower_bound.incoming_lz_over_m_m);
+    input.upper_bound.incoming_lz_over_m_m = prompt_double(
+        "Lz upper bound", input.upper_bound.incoming_lz_over_m_m);
+    input.step.incoming_lz_over_m_m = prompt_double(
+        "Lz step", input.step.incoming_lz_over_m_m);
+    input.lower_bound.split_angle_rad = prompt_double(
+        "Split-angle lower bound [radians]", input.lower_bound.split_angle_rad);
+    input.upper_bound.split_angle_rad = prompt_double(
+        "Split-angle upper bound [radians]", input.upper_bound.split_angle_rad);
+    input.step.split_angle_rad = prompt_double(
+        "Split-angle step [radians]", input.step.split_angle_rad);
+
+    bh::PenroseDijkstraSearchConfig search;
+    search.start = input.start;
+    search.lower_bound = input.lower_bound;
+    search.upper_bound = input.upper_bound;
+    search.step = input.step;
+    search.eta_target = 0.15;
+    search.max_evaluations = bh::max_penrose_search_nodes;
+    search.time_budget = std::chrono::milliseconds(0);
+
+    const bh::EquatorialPenroseDijkstraInput request{
+        make_interactive_penrose_scenario(session), search};
+    try {
+        const bh::PenroseSearchWindowSummary window =
+            bh::describe_penrose_search_window(request.scenario, request.search);
+        bh::require_complete_penrose_search_window(request.scenario, request.search);
+        std::cout << "\nAccepted search window: "
+                  << window.dimension_sizes[0] << " x "
+                  << window.dimension_sizes[1] << " x "
+                  << window.dimension_sizes[2] << " = "
+                  << window.candidates << " nodes.\n";
+        const bh::PenroseDijkstraSearchResult result =
+            bh::find_penrose_dijkstra_path(request.scenario, request.search);
+        print_penrose_dijkstra_result(request, result);
+        record_completed_penrose_window(
+            session.penrose_fallback_campaign, request.scenario, result);
+        print_penrose_fallback_campaign(session.penrose_fallback_campaign);
+    } catch (const std::invalid_argument& error) {
+        std::cout << "\nSearch window rejected: " << error.what() << "\n"
+                  << "Choose this action again and enter a smaller range or larger step.\n";
+    }
 }
 
 void run_interactive_toy_plasma(InteractiveSession& session) {
@@ -667,9 +906,10 @@ void run_interactive() {
                   << "  3. Run Algebraic rotational-energy reservoir\n"
                   << "  4. Run Kerr trajectory validation\n"
                   << "  5. Run Penrose energy-extraction event\n"
-                  << "  6. Run reduced toy-plasma transport\n"
-                  << "  7. End session\n";
-        switch (prompt_choice("Choose an action", 5, 1, 7)) {
+                  << "  6. Run bounded 15% Penrose parameter search\n"
+                  << "  7. Run reduced toy-plasma transport\n"
+                  << "  8. End session\n";
+        switch (prompt_choice("Choose an action", 5, 1, 8)) {
         case 1:
             configure_shared_black_hole(session);
             break;
@@ -686,9 +926,12 @@ void run_interactive() {
             run_interactive_penrose(session);
             break;
         case 6:
-            run_interactive_toy_plasma(session);
+            run_interactive_penrose_search(session);
             break;
         case 7:
+            run_interactive_toy_plasma(session);
+            break;
+        case 8:
             return;
         }
     }

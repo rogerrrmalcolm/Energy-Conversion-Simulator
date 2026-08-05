@@ -163,6 +163,14 @@ CandidateGrid make_candidate_grid(const PenroseDijkstraSearchConfig& config) {
             grid.candidates_in_domain, dimension_size,
             "Dijkstra candidate grid is too large to count safely");
     }
+    if (grid.candidates_in_domain > max_penrose_search_nodes) {
+        throw std::invalid_argument(
+            "Penrose search window contains " +
+            std::to_string(grid.candidates_in_domain) +
+            " nodes; the scalar limit is " +
+            std::to_string(max_penrose_search_nodes) +
+            ". Increase a step size or submit a separate smaller parameter window");
+    }
     return grid;
 }
 
@@ -449,6 +457,34 @@ DijkstraGridResult find_dijkstra_grid_path(const DijkstraGridKey& start,
         }
     }
     return {};
+}
+
+PenroseSearchWindowSummary describe_penrose_search_window(
+    const EquatorialPenroseScenario& scenario,
+    const PenroseDijkstraSearchConfig& config) {
+    const CandidateGrid grid = validated_candidate_grid(scenario, config);
+    return {{{static_cast<std::size_t>(grid.upper[0]) + 1,
+              static_cast<std::size_t>(grid.upper[1]) + 1,
+              static_cast<std::size_t>(grid.upper[2]) + 1}},
+            grid.candidates_in_domain};
+}
+
+void require_complete_penrose_search_window(
+    const EquatorialPenroseScenario& scenario,
+    const PenroseDijkstraSearchConfig& config) {
+    const PenroseSearchWindowSummary window =
+        describe_penrose_search_window(scenario, config);
+    if (config.max_evaluations < window.candidates) {
+        throw std::invalid_argument(
+            "complete Penrose search requires max_evaluations >= " +
+            std::to_string(window.candidates) +
+            " so no candidate node in the declared window can be skipped");
+    }
+    if (config.time_budget.count() != 0) {
+        throw std::invalid_argument(
+            "complete Penrose search requires time_budget = 0; use cancellation to stop an"
+            " intentionally abandoned run");
+    }
 }
 
 std::string_view penrose_dijkstra_node_status_name(const PenroseDijkstraNodeStatus status) {

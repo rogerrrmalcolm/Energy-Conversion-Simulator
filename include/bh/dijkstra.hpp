@@ -15,6 +15,10 @@
 namespace bh {
 using DijkstraGridKey = std::array<int, 3>;
 
+// One scalar search window is deliberately bounded until parallel backends are
+// implemented. The limit applies to candidate nodes, not physical trajectories.
+inline constexpr std::size_t max_penrose_search_nodes = 2'700;
+
 struct DijkstraGridResult {
     bool found{};
     std::vector<DijkstraGridKey> parameter_adjustment_path;
@@ -42,6 +46,11 @@ struct PenroseDijkstraSearchConfig {
     std::size_t max_evaluations{std::numeric_limits<std::size_t>::max()};
     std::chrono::milliseconds time_budget{};
     PenroseSearchAlgorithm algorithm{PenroseSearchAlgorithm::dijkstra_h_zero};
+};
+
+struct PenroseSearchWindowSummary {
+    std::array<std::size_t, 3> dimension_sizes{};
+    std::size_t candidates{};
 };
 
 enum class PenroseDijkstraSearchStatus {
@@ -146,6 +155,19 @@ struct PenrosePhaseMapResult {
     PenroseDijkstraSearchStatus status);
 [[nodiscard]] std::string_view penrose_phase_map_status_name(PenrosePhaseMapStatus status);
 [[nodiscard]] std::string_view penrose_search_algorithm_name(PenroseSearchAlgorithm algorithm);
+
+// Validates the grid, including the Kerr radius domain and the hard node cap,
+// then reports its exact discrete shape.
+[[nodiscard]] PenroseSearchWindowSummary describe_penrose_search_window(
+    const EquatorialPenroseScenario& scenario,
+    const PenroseDijkstraSearchConfig& config);
+
+// CLI searches use this stricter contract. A zero time budget and a node budget
+// covering the entire window ensure that failure to find eta_target means no
+// declared grid node reached it. Values between grid points remain untested.
+void require_complete_penrose_search_window(
+    const EquatorialPenroseScenario& scenario,
+    const PenroseDijkstraSearchConfig& config);
 
 // Finds the minimum number of one-grid-step parameter adjustments needed to reach
 // a physically feasible event whose Penrose efficiency reaches eta_target. If a

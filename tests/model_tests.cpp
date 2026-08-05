@@ -341,6 +341,69 @@ int main() {
               loaded_search.search.time_budget.count() == 0 &&
               loaded_search.search.algorithm == bh::PenroseSearchAlgorithm::dijkstra_h_zero,
           "search scenario loader preserves explicit unit-cost Dijkstra controls");
+    check(bh::max_penrose_search_nodes == 2'700,
+          "scalar Penrose search exposes the declared 2700-node limit");
+    const bh::PenroseSearchWindowSummary fixture_window =
+        bh::describe_penrose_search_window(loaded_search.scenario, loaded_search.search);
+    check(fixture_window.dimension_sizes == std::array<std::size_t, 3>{5, 5, 5} &&
+              fixture_window.candidates == 125,
+          "search-window description reports the exact discrete grid shape");
+    bh::require_complete_penrose_search_window(loaded_search.scenario, loaded_search.search);
+
+    const auto public_target_search = bh::load_equatorial_penrose_dijkstra_input(
+        std::filesystem::path(BH_SOURCE_DIR) / "scenarios" /
+        "equatorial_penrose_dijkstra_15_percent.cfg");
+    near(public_target_search.search.eta_target, 0.15, 0.0,
+         "public bounded search retains the declared 15 percent target");
+    const bh::PenroseSearchWindowSummary public_target_window =
+        bh::describe_penrose_search_window(
+            public_target_search.scenario, public_target_search.search);
+    check(public_target_window.dimension_sizes ==
+              std::array<std::size_t, 3>{95, 5, 5} &&
+              public_target_window.candidates == 2'375,
+          "public 15 percent search remains below the 2700-node scalar limit");
+    bh::require_complete_penrose_search_window(
+        public_target_search.scenario, public_target_search.search);
+
+    auto exact_limit_search = loaded_search.search;
+    exact_limit_search.start = {1.05, 1.90, -2.00};
+    exact_limit_search.lower_bound = exact_limit_search.start;
+    exact_limit_search.upper_bound = {1.19, 2.04, -1.89};
+    exact_limit_search.step = {0.01, 0.01, 0.01};
+    exact_limit_search.max_evaluations = bh::max_penrose_search_nodes;
+    const bh::PenroseSearchWindowSummary exact_limit_window =
+        bh::describe_penrose_search_window(loaded_search.scenario, exact_limit_search);
+    check(exact_limit_window.dimension_sizes ==
+              std::array<std::size_t, 3>{15, 15, 12} &&
+              exact_limit_window.candidates == bh::max_penrose_search_nodes,
+          "search-window validation accepts exactly 2700 candidate nodes");
+    bh::require_complete_penrose_search_window(loaded_search.scenario, exact_limit_search);
+
+    rejected = false;
+    try {
+        auto oversized_search = exact_limit_search;
+        oversized_search.upper_bound.split_angle_rad = -1.88;
+        (void)bh::describe_penrose_search_window(loaded_search.scenario, oversized_search);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "Penrose search rejects a candidate window above 2700 nodes");
+
+    rejected = false;
+    try {
+        auto incomplete_search = loaded_search.search;
+        incomplete_search.max_evaluations = fixture_window.candidates - 1;
+        bh::require_complete_penrose_search_window(
+            loaded_search.scenario, incomplete_search);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "complete CLI window rejects a node budget that could skip a grid node");
+
+    rejected = false;
+    try {
+        auto timed_search = loaded_search.search;
+        timed_search.time_budget = std::chrono::milliseconds(1);
+        bh::require_complete_penrose_search_window(loaded_search.scenario, timed_search);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "complete CLI window rejects a time budget that could skip a grid node");
+
     const auto penrose_search =
         bh::find_penrose_dijkstra_path(loaded_search.scenario, loaded_search.search);
     check(penrose_search.found && penrose_search.target_reached &&

@@ -447,6 +447,17 @@ For a grid with dimensions `(n_r, n_Lz, n_angle)`:
 The `5 x 5 x 5` reference graph has 125 nodes and 300 undirected edges. The
 expanded `95 x 5 x 5` graph has 2,375 nodes and 6,150 undirected edges.
 
+One scalar search window is hard-limited to **2,700 candidate nodes**. The
+window is rejected before any trajectory work if the product
+`n_r * n_Lz * n_angle` exceeds that limit. File-driven and interactive CLI
+searches also require `max_evaluations >= |V|` and a disabled wall-clock
+budget, so a no-target result cannot be caused by silently skipping a declared
+grid node.
+
+This is a discrete guarantee: it covers every configured grid point, not every
+real number between adjacent points. Testing the gaps requires smaller steps,
+which means narrowing the bounds to remain within 2,700 nodes.
+
 ### Cost, queue, and deterministic ordering
 
 The baseline runs Dijkstra with
@@ -520,6 +531,13 @@ break remaining ties by canonical key
 This returns `best_feasible_below_target`, not `found_goal`. Node-budget,
 time-budget, cancellation, and evaluator-failure exits never report a bounded
 maximum because their graphs are incomplete.
+
+After a completed window reports no 15% candidate, the CLI asks for a new
+window with at least one split-radius, `Lz`, or split-angle interval below or
+above its previous interval. Split-radius bounds must always remain strictly
+between the outer horizon and equatorial static limit. Each additional window
+remains an independent bounded claim; the program does not call several
+windows a global continuous optimum.
 
 ### Internal shortest-path fixture
 
@@ -839,8 +857,18 @@ Interactive shared session:
 ```
 
 The interactive mode retains one black-hole mass and spin while the user runs
-the algebraic, Kerr, Penrose, and toy-plasma engines. Kerr and Penrose normalize
-that shared physical black hole to `M = 1` internally.
+the algebraic, Kerr, single-event Penrose, bounded 15% Penrose-search, and
+toy-plasma engines. The search prompts for its starting tuple, lower and upper
+bounds, and step sizes, then displays the resulting grid shape before running.
+Kerr and Penrose normalize the shared physical black hole to `M = 1`
+internally.
+
+When several interactive 15% windows finish without a goal, the session keeps
+the greatest validated below-target fallback found across those completed
+windows. It reports the overall parameters, efficiency, extraction, and
+residual after every pass. This history resets when fixed Penrose scenario
+inputs change, preventing results from different physical scenarios from being
+compared as one search campaign.
 
 ### Scenario contract
 
@@ -859,7 +887,8 @@ graph.
 Every lower-to-upper interval must be an exact multiple of its positive step,
 and the declared starting point must align with that grid. Radius bounds must
 remain strictly inside the equatorial ergosphere. All three edge costs must
-currently equal one.
+currently equal one. A CLI window may contain at most 2,700 nodes and must have
+enough evaluation budget to cover its complete discrete grid.
 
 Provided scenarios:
 
