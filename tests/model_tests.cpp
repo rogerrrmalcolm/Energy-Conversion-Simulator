@@ -8,6 +8,7 @@
 #include "bh/schwarzschild_geodesic.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
@@ -323,6 +324,219 @@ int main() {
         bh::evaluate_equatorial_penrose_event(loaded_event.scenario, loaded_event.split);
     check(loaded_penrose.status == bh::PenroseEventStatus::physically_feasible,
           "versioned reference scenario evaluates as physically feasible");
+
+    const auto loaded_search = bh::load_equatorial_penrose_dijkstra_input(
+        std::filesystem::path(BH_SOURCE_DIR) / "scenarios" /
+        "equatorial_penrose_dijkstra_reference.cfg");
+    near(loaded_search.search.start.split_radius_over_m, 1.09, 0.0,
+         "search scenario loader preserves the declared start radius");
+    near(loaded_search.search.step.split_radius_over_m, 0.01, 0.0,
+         "search scenario loader preserves the declared radius step");
+    near(loaded_search.search.eta_target, 0.04, 0.0,
+         "search scenario loader preserves the efficiency target");
+    check(loaded_search.search.edge_costs[0] == 1 &&
+              loaded_search.search.edge_costs[1] == 1 &&
+              loaded_search.search.edge_costs[2] == 1 &&
+              loaded_search.search.max_evaluations == 125 &&
+              loaded_search.search.time_budget.count() == 0 &&
+              loaded_search.search.algorithm == bh::PenroseSearchAlgorithm::dijkstra_h_zero,
+          "search scenario loader preserves explicit unit-cost Dijkstra controls");
+    const auto penrose_search =
+        bh::find_penrose_dijkstra_path(loaded_search.scenario, loaded_search.search);
+    check(penrose_search.found &&
+              penrose_search.status == bh::PenroseDijkstraSearchStatus::found_goal,
+          "Penrose Dijkstra search finds a physics-valid target candidate");
+    check(penrose_search.parameter_adjustment_path.size() == 2,
+          "Penrose Dijkstra search returns the minimum one-step adjustment trace");
+    check(penrose_search.parameter_adjustment_path.front().g_cost == 0 &&
+              penrose_search.parameter_adjustment_path.front().h_cost == 0 &&
+              penrose_search.parameter_adjustment_path.front().f_cost == 0 &&
+              penrose_search.parameter_adjustment_path.back().g_cost == 1 &&
+              penrose_search.parameter_adjustment_path.back().h_cost == 0 &&
+              penrose_search.parameter_adjustment_path.back().f_cost == 1,
+          "Penrose Dijkstra trace records the cumulative unit adjustment cost");
+    check(penrose_search.parameter_adjustment_path.front().status !=
+              bh::PenroseDijkstraNodeStatus::goal_feasible &&
+              penrose_search.parameter_adjustment_path.back().status ==
+                  bh::PenroseDijkstraNodeStatus::goal_feasible,
+          "Penrose Dijkstra accepts only a candidate satisfying the physical goal predicate");
+    check(!penrose_search.parameter_adjustment_path.front().parent_key &&
+              penrose_search.parameter_adjustment_path.back().parent_key &&
+              *penrose_search.parameter_adjustment_path.back().parent_key ==
+                  penrose_search.parameter_adjustment_path.front().key &&
+              penrose_search.parameter_adjustment_path.back().local_change ==
+                  bh::DijkstraGridKey{1, 0, 0},
+          "Penrose Dijkstra path retains parent and one-coordinate local-change metadata");
+    near(penrose_search.parameter_adjustment_path.back().split.split_radius_over_m, 1.10, 1e-14,
+         "Penrose Dijkstra derives the selected split from its integer grid key");
+    check(penrose_search.goal_event.status == bh::PenroseEventStatus::physically_feasible &&
+              penrose_search.goal_event.eta_penrose >= loaded_search.search.eta_target &&
+              penrose_search.goal_event.captured_trajectory.termination ==
+                  bh::TrajectoryTermination::crossed_horizon &&
+              penrose_search.goal_event.escaping_trajectory.termination ==
+                  bh::TrajectoryTermination::reached_escape_radius &&
+              penrose_search.diagnostics.final_verification_evaluations == 1 &&
+              penrose_search.diagnostics.nodes_evaluated == 7 &&
+              penrose_search.diagnostics.duplicate_nodes_skipped > 0,
+          "Penrose Dijkstra freshly verifies a captured-and-escaping physical goal event");
+    const auto repeated_penrose_search =
+        bh::find_penrose_dijkstra_path(loaded_search.scenario, loaded_search.search);
+    check(repeated_penrose_search.status == penrose_search.status &&
+              repeated_penrose_search.diagnostics.nodes_generated ==
+                  penrose_search.diagnostics.nodes_generated &&
+              repeated_penrose_search.diagnostics.nodes_evaluated ==
+                  penrose_search.diagnostics.nodes_evaluated &&
+              repeated_penrose_search.diagnostics.nodes_expanded ==
+                  penrose_search.diagnostics.nodes_expanded &&
+              repeated_penrose_search.diagnostics.duplicate_nodes_skipped ==
+                  penrose_search.diagnostics.duplicate_nodes_skipped &&
+              repeated_penrose_search.parameter_adjustment_path.size() ==
+                  penrose_search.parameter_adjustment_path.size() &&
+              repeated_penrose_search.parameter_adjustment_path.back().key ==
+                  penrose_search.parameter_adjustment_path.back().key,
+          "Penrose Dijkstra repeats the same deterministic search outcome and trace");
+
+    auto start_goal_search = loaded_search.search;
+    start_goal_search.start = {1.10, 2.07, -2.0};
+    start_goal_search.lower_bound = start_goal_search.start;
+    start_goal_search.upper_bound = start_goal_search.start;
+    start_goal_search.max_evaluations = 1;
+    const auto start_goal =
+        bh::find_penrose_dijkstra_path(loaded_search.scenario, start_goal_search);
+    check(start_goal.status == bh::PenroseDijkstraSearchStatus::found_goal &&
+              start_goal.parameter_adjustment_path.size() == 1 &&
+              start_goal.parameter_adjustment_path.front().g_cost == 0,
+          "Penrose Dijkstra returns a one-node trace when the start already meets the goal");
+
+    auto no_goal_search = loaded_search.search;
+    no_goal_search.start = {1.10, 2.07, -2.0};
+    no_goal_search.lower_bound = no_goal_search.start;
+    no_goal_search.upper_bound = no_goal_search.start;
+    no_goal_search.eta_target = 0.05;
+    const auto no_goal = bh::find_penrose_dijkstra_path(loaded_search.scenario, no_goal_search);
+    check(!no_goal.found &&
+              no_goal.status == bh::PenroseDijkstraSearchStatus::no_solution_within_bounds &&
+              no_goal.diagnostics.nodes_evaluated == 1 &&
+              no_goal.diagnostics.escaping_without_target == 1,
+          "Penrose Dijkstra reports a valid escape below an unreachable bounded target");
+
+    auto budget_limited_search = loaded_search.search;
+    budget_limited_search.max_evaluations = 1;
+    const auto budget_limited =
+        bh::find_penrose_dijkstra_path(loaded_search.scenario, budget_limited_search);
+    check(budget_limited.status == bh::PenroseDijkstraSearchStatus::node_budget_exhausted &&
+              budget_limited.diagnostics.nodes_evaluated == 1,
+          "Penrose Dijkstra stops explicitly when its evaluation budget is exhausted");
+
+    auto time_limited_search = loaded_search.search;
+    time_limited_search.time_budget = std::chrono::milliseconds(1);
+    const auto time_limited =
+        bh::find_penrose_dijkstra_path(loaded_search.scenario, time_limited_search);
+    check(time_limited.status == bh::PenroseDijkstraSearchStatus::time_budget_exhausted,
+          "Penrose Dijkstra reports a wall-clock budget exhaustion instead of a partial result");
+
+    auto unattainable_search = start_goal_search;
+    unattainable_search.eta_target = bh::classical_penrose_efficiency_limit();
+    const auto unattainable =
+        bh::find_penrose_dijkstra_path(loaded_search.scenario, unattainable_search);
+    check(unattainable.status ==
+                  bh::PenroseDijkstraSearchStatus::target_unattainable_under_model &&
+              unattainable.diagnostics.nodes_evaluated == 0,
+          "Penrose Dijkstra rejects the unattainable extremal single-split target before expansion");
+
+    std::stop_source cancellation_source;
+    cancellation_source.request_stop();
+    const auto cancelled = bh::find_penrose_dijkstra_path(
+        loaded_search.scenario, loaded_search.search, cancellation_source.get_token());
+    check(cancelled.status == bh::PenroseDijkstraSearchStatus::cancelled &&
+              cancelled.diagnostics.nodes_evaluated == 0,
+          "Penrose Dijkstra supports cooperative cancellation before evaluation");
+
+    auto coarse_radius_search = loaded_search.search;
+    coarse_radius_search.lower_bound = {1.09, 2.07, -2.0};
+    coarse_radius_search.upper_bound = {1.10, 2.07, -2.0};
+    coarse_radius_search.step = {0.01, 0.01, 0.01};
+    coarse_radius_search.start = {1.09, 2.07, -2.0};
+    coarse_radius_search.max_evaluations = 2;
+    const auto coarse_radius =
+        bh::find_penrose_dijkstra_path(loaded_search.scenario, coarse_radius_search);
+    auto fine_radius_search = coarse_radius_search;
+    fine_radius_search.step.split_radius_over_m = 0.005;
+    fine_radius_search.max_evaluations = 3;
+    const auto fine_radius =
+        bh::find_penrose_dijkstra_path(loaded_search.scenario, fine_radius_search);
+    check(coarse_radius.found && fine_radius.found &&
+              coarse_radius.goal_event.eta_penrose >= coarse_radius_search.eta_target &&
+              fine_radius.goal_event.eta_penrose >= fine_radius_search.eta_target,
+          "coarse and refined radius grids both reproduce a validated target-reaching result");
+
+    const auto small_phase_map =
+        bh::evaluate_penrose_phase_map(loaded_search.scenario, coarse_radius_search);
+    check(small_phase_map.complete &&
+              small_phase_map.status == bh::PenrosePhaseMapStatus::completed &&
+              small_phase_map.candidates.size() == 2 &&
+              small_phase_map.diagnostics.nodes_evaluated == 2 &&
+              small_phase_map.best_validated_candidate &&
+              small_phase_map.best_validated_candidate->key == bh::DijkstraGridKey{1, 0, 0} &&
+              small_phase_map.best_event.status == bh::PenroseEventStatus::physically_feasible &&
+              small_phase_map.diagnostics.final_verification_evaluations == 1,
+          "bounded phase map returns a freshly verified best extraction within its full grid");
+    auto limited_phase_map_search = coarse_radius_search;
+    limited_phase_map_search.max_evaluations = 1;
+    const auto limited_phase_map =
+        bh::evaluate_penrose_phase_map(loaded_search.scenario, limited_phase_map_search);
+    check(!limited_phase_map.complete &&
+              limited_phase_map.status == bh::PenrosePhaseMapStatus::node_budget_exhausted &&
+              limited_phase_map.candidates.size() == 1,
+          "bounded phase map never labels a partial scan as a full-grid maximum");
+
+    rejected = false;
+    try {
+        auto invalid_search = loaded_search.search;
+        invalid_search.step.split_angle_rad = 0.0;
+        (void)bh::find_penrose_dijkstra_path(loaded_search.scenario, invalid_search);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "Penrose Dijkstra rejects a non-positive candidate-grid step");
+
+    rejected = false;
+    try {
+        auto invalid_search = loaded_search.search;
+        invalid_search.edge_costs[0] = 2;
+        (void)bh::find_penrose_dijkstra_path(loaded_search.scenario, invalid_search);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "Penrose Dijkstra preserves the declared unit-cost baseline");
+
+    rejected = false;
+    try {
+        auto invalid_search = loaded_search.search;
+        invalid_search.start.split_radius_over_m = 1.095;
+        (void)bh::find_penrose_dijkstra_path(loaded_search.scenario, invalid_search);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "Penrose Dijkstra rejects a start candidate off the canonical grid");
+
+    rejected = false;
+    try {
+        auto invalid_search = loaded_search.search;
+        invalid_search.lower_bound.split_radius_over_m = 1.04;
+        (void)bh::find_penrose_dijkstra_path(loaded_search.scenario, invalid_search);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "Penrose Dijkstra rejects search radius bounds outside the ergosphere");
+
+    rejected = false;
+    try {
+        auto invalid_search = loaded_search.search;
+        invalid_search.step.split_angle_rad = std::numeric_limits<double>::quiet_NaN();
+        (void)bh::find_penrose_dijkstra_path(loaded_search.scenario, invalid_search);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "Penrose Dijkstra rejects non-finite grid parameters");
+
+    auto invalid_evaluator_scenario = loaded_search.scenario;
+    invalid_evaluator_scenario.parent_rest_mass = 0.0;
+    const auto evaluator_failure =
+        bh::find_penrose_dijkstra_path(invalid_evaluator_scenario, start_goal_search);
+    check(evaluator_failure.status == bh::PenroseDijkstraSearchStatus::evaluation_failure &&
+              !evaluator_failure.failure_message.empty(),
+          "Penrose Dijkstra preserves an evaluator exception as an explicit search failure");
 
     rejected = false;
     try {

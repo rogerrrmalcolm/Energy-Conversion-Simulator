@@ -77,6 +77,16 @@ if(BH_BUILD_TESTS)
     set_tests_properties(cli_penrose_reference PROPERTIES
         PASS_REGULAR_EXPRESSION "status: physically_feasible")
 
+    add_test(NAME cli_penrose_dijkstra_reference COMMAND black_hole_demo --search-penrose
+        "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/equatorial_penrose_dijkstra_reference.cfg")
+    set_tests_properties(cli_penrose_dijkstra_reference PROPERTIES
+        PASS_REGULAR_EXPRESSION "status: found_goal")
+
+    add_test(NAME cli_penrose_phase_map COMMAND black_hole_demo --map-penrose
+        "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/equatorial_penrose_dijkstra_smoke.cfg")
+    set_tests_properties(cli_penrose_phase_map PROPERTIES
+        PASS_REGULAR_EXPRESSION "status: completed")
+
     add_test(NAME cli_invalid_penrose_scenario COMMAND ${CMAKE_COMMAND}
         "-DEXECUTABLE=$<TARGET_FILE:black_hole_demo>"
         "-DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/invalid_penrose_unknown_key.cfg"

@@ -1,4 +1,5 @@
 #include "bh/algebraic_model.hpp"
+#include "bh/dijkstra.hpp"
 #include "bh/kerr_geodesic.hpp"
 #include "bh/penrose_model.hpp"
 #include "bh/penrose_scenario_io.hpp"
@@ -6,6 +7,7 @@
 #include "bh/trajectory.hpp"
 
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -135,9 +137,15 @@ void print_usage(const std::string_view program_name) {
               << " --toy-plasma <magnetic_field_tesla> <mass_density_kg_m3> <flow_area_m2>"
                  " <a_star> <duration_seconds>\n"
               << "  " << program_name << " --scenario <path-to-event.cfg>\n\n"
+              << "  " << program_name << " --search-penrose <path-to-search.cfg>\n\n"
+              << "  " << program_name << " --map-penrose <path-to-search.cfg>\n\n"
               << "  " << program_name << " --interactive\n\n"
               << "The scenario command evaluates one declared equatorial Penrose event."
                  " It does not search or optimize parameters.\n"
+              << "The search-penrose command runs Dijkstra over a declared bounded parameter"
+                 " grid and calls the Penrose evaluator for each candidate.\n"
+              << "The map-penrose command exhaustively evaluates the declared bounded grid"
+                 " and reports the greatest validated extraction found within that grid.\n"
               << "The toy-plasma command is a reduced, ideal-MHD-inspired transport scaling,"
                  " not an MHD or GRMHD simulation.\n"
               << "The interactive command opens a shared session and retains black-hole state"
@@ -229,6 +237,166 @@ void print_penrose_event_result(const bh::EquatorialPenroseScenario& scenario,
                  " astrophysical energy or a delivery model.\n";
 }
 
+void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& input,
+                                   const bh::PenroseDijkstraSearchResult& result) {
+    const bh::PenroseDijkstraSearchConfig& search = input.search;
+    const bh::PenroseDijkstraSearchDiagnostics& diagnostics = result.diagnostics;
+    std::cout << "Dijkstra Penrose parameter search\n"
+              << "  model: bounded parameter graph; each node calls the restricted"
+                 " equatorial Penrose evaluator\n"
+              << "  algorithm: " << bh::penrose_search_algorithm_name(search.algorithm)
+              << " (h = 0, so f = g)\n"
+              << "  execution backend: scalar-single-thread\n"
+              << "  black-hole mass scale:   " << input.scenario.black_hole_mass << "\n"
+              << "  dimensionless spin:      " << input.scenario.dimensionless_spin << "\n"
+              << "  target Penrose efficiency: " << 100.0 * search.eta_target << " %\n"
+              << "  start split:              ("
+              << search.start.split_radius_over_m << ", "
+              << search.start.incoming_lz_over_m_m << ", "
+              << search.start.split_angle_rad << ")\n"
+              << "  grid steps:               ("
+              << search.step.split_radius_over_m << ", "
+              << search.step.incoming_lz_over_m_m << ", "
+              << search.step.split_angle_rad << ")\n"
+              << "  lower bounds:             ("
+              << search.lower_bound.split_radius_over_m << ", "
+              << search.lower_bound.incoming_lz_over_m_m << ", "
+              << search.lower_bound.split_angle_rad << ")\n"
+              << "  upper bounds:             ("
+              << search.upper_bound.split_radius_over_m << ", "
+              << search.upper_bound.incoming_lz_over_m_m << ", "
+              << search.upper_bound.split_angle_rad << ")\n"
+              << "  edge costs:               (" << search.edge_costs[0] << ", "
+              << search.edge_costs[1] << ", " << search.edge_costs[2] << ")\n"
+              << "  maximum evaluations:      " << search.max_evaluations << "\n"
+              << "  time budget:              " << search.time_budget.count()
+              << " ms (0 = disabled)\n\n"
+              << "Search diagnostics\n"
+              << "  candidates in domain:     " << diagnostics.candidates_in_domain << "\n"
+              << "  nodes generated:          " << diagnostics.nodes_generated << "\n"
+              << "  nodes evaluated:          " << diagnostics.nodes_evaluated << "\n"
+              << "  nodes expanded:           " << diagnostics.nodes_expanded << "\n"
+              << "  duplicate nodes skipped:  " << diagnostics.duplicate_nodes_skipped << "\n"
+              << "  out-of-domain neighbors:  "
+              << diagnostics.outside_search_domain_neighbors << "\n"
+              << "  fresh final checks:       "
+              << diagnostics.final_verification_evaluations << "\n"
+              << "  outside ergosphere:       " << diagnostics.outside_ergosphere << "\n"
+              << "  physics invalid:          " << diagnostics.physics_invalid << "\n"
+              << "  captured/non-escaping:    " << diagnostics.captured_or_non_escaping << "\n"
+              << "  escaped below target:     " << diagnostics.escaping_without_target << "\n"
+              << "  integration failed:       " << diagnostics.integration_failed << "\n"
+              << "  goal feasible:            " << diagnostics.goal_feasible << "\n"
+              << "  elapsed:                  "
+              << std::chrono::duration<double, std::milli>(diagnostics.elapsed).count()
+              << " ms\n\n"
+              << "Search outcome\n"
+              << "  status: " << bh::penrose_dijkstra_search_status_name(result.status) << "\n";
+
+    if (!result.failure_message.empty()) {
+        std::cout << "  detail: " << result.failure_message << "\n";
+    }
+
+    if (!result.found) {
+        std::cout << "\nNo selected goal event is available for this terminated search.\n";
+        return;
+    }
+
+    const bh::PenroseDijkstraNode& goal = result.parameter_adjustment_path.back();
+    std::cout << "\nSelected candidate\n"
+              << "  status: " << bh::penrose_dijkstra_node_status_name(goal.status) << "\n"
+              << "  parameter-adjustment cost: " << goal.g_cost << "\n"
+              << "  h / f:                    " << goal.h_cost << " / " << goal.f_cost
+              << "\n"
+              << "  split parameters:         ("
+              << goal.split.split_radius_over_m << ", "
+              << goal.split.incoming_lz_over_m_m << ", "
+              << goal.split.split_angle_rad << ")\n"
+              << "  Penrose efficiency:       " << 100.0 * goal.eta_penrose << " %\n"
+              << "  net extracted energy:     " << goal.extracted_energy << "\n"
+              << "  maximum residual:         " << goal.maximum_normalized_residual << "\n\n"
+              << "Parameter-adjustment trace (not a particle trajectory)\n";
+    for (const bh::PenroseDijkstraNode& node : result.parameter_adjustment_path) {
+        std::cout << "  g/h/f=" << node.g_cost << "/" << node.h_cost << "/" << node.f_cost
+                  << " key=(" << node.key[0] << ", " << node.key[1] << ", " << node.key[2]
+                  << ") delta=(" << node.local_change[0] << ", " << node.local_change[1]
+                  << ", " << node.local_change[2] << ") split=("
+                  << node.split.split_radius_over_m << ", "
+                  << node.split.incoming_lz_over_m_m << ", " << node.split.split_angle_rad
+                  << ") status=" << bh::penrose_dijkstra_node_status_name(node.status)
+                  << " eta=" << 100.0 * node.eta_penrose << "% extracted="
+                  << node.extracted_energy << " residual=" << node.maximum_normalized_residual
+                  << " capture=" << termination_name(node.captured_termination)
+                  << " escape=" << termination_name(node.escaping_termination) << "\n";
+    }
+    std::cout << "\nPhysical goal-event diagnostics\n";
+    print_penrose_event_result(input.scenario, result.goal_event);
+}
+
+void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& input,
+                                    const bh::PenrosePhaseMapResult& result) {
+    const bh::PenroseDijkstraSearchConfig& search = input.search;
+    const bh::PenroseDijkstraSearchDiagnostics& diagnostics = result.diagnostics;
+    std::cout << "Bounded Penrose phase-space map\n"
+              << "  model: scalar exhaustive evaluation of the declared parameter grid\n"
+              << "  execution backend: scalar-single-thread\n"
+              << "  lower bounds:             ("
+              << search.lower_bound.split_radius_over_m << ", "
+              << search.lower_bound.incoming_lz_over_m_m << ", "
+              << search.lower_bound.split_angle_rad << ")\n"
+              << "  upper bounds:             ("
+              << search.upper_bound.split_radius_over_m << ", "
+              << search.upper_bound.incoming_lz_over_m_m << ", "
+              << search.upper_bound.split_angle_rad << ")\n"
+              << "  grid steps:               ("
+              << search.step.split_radius_over_m << ", "
+              << search.step.incoming_lz_over_m_m << ", "
+              << search.step.split_angle_rad << ")\n"
+              << "  candidates in domain:     " << diagnostics.candidates_in_domain << "\n"
+              << "  nodes evaluated:          " << diagnostics.nodes_evaluated << "\n"
+              << "  retained map entries:     " << result.candidates.size() << "\n"
+              << "  maximum evaluations:      " << search.max_evaluations << "\n"
+              << "  elapsed:                  "
+              << std::chrono::duration<double, std::milli>(diagnostics.elapsed).count()
+              << " ms\n"
+              << "  status: " << bh::penrose_phase_map_status_name(result.status) << "\n";
+    if (!result.failure_message.empty()) {
+        std::cout << "  detail: " << result.failure_message << "\n";
+    }
+    std::cout << "\nStatus counts\n"
+              << "  physics invalid:          " << diagnostics.physics_invalid << "\n"
+              << "  captured/non-escaping:    " << diagnostics.captured_or_non_escaping << "\n"
+              << "  escaped below target:     " << diagnostics.escaping_without_target << "\n"
+              << "  integration failed:       " << diagnostics.integration_failed << "\n"
+              << "  goal feasible:            " << diagnostics.goal_feasible << "\n";
+
+    if (!result.best_validated_candidate) {
+        std::cout << "\nNo positive, physically validated extraction was found in the"
+                     " evaluated portion of this grid.\n";
+        return;
+    }
+
+    const bh::PenroseDijkstraNode& best = *result.best_validated_candidate;
+    std::cout << "\nBest validated candidate "
+              << (result.complete ? "within the fully evaluated bounded grid" :
+                                    "encountered before termination")
+              << "\n"
+              << "  split parameters:         (" << best.split.split_radius_over_m << ", "
+              << best.split.incoming_lz_over_m_m << ", " << best.split.split_angle_rad
+              << ")\n"
+              << "  net extracted energy:     " << best.extracted_energy << "\n"
+              << "  Penrose efficiency:       " << 100.0 * best.eta_penrose << " %\n"
+              << "  maximum residual:         " << best.maximum_normalized_residual << "\n";
+    if (!result.complete) {
+        std::cout << "\nThis is not a maximum over the full declared grid because the map"
+                     " terminated early.\n";
+        return;
+    }
+
+    std::cout << "\nPhysical best-event diagnostics\n";
+    print_penrose_event_result(input.scenario, result.best_event);
+}
+
 void run_algebraic(const int argc, char* argv[]) {
     if (argc != 4) {
         throw std::invalid_argument("--algebraic requires <mass_kg> <a_star>");
@@ -279,6 +447,30 @@ void run_penrose_event(const int argc, char* argv[]) {
     const bh::PenroseEventResult result =
         bh::evaluate_equatorial_penrose_event(input.scenario, input.split);
     print_penrose_event_result(input.scenario, result);
+}
+
+void run_penrose_dijkstra(const int argc, char* argv[]) {
+    if (argc != 3) {
+        throw std::invalid_argument("--search-penrose requires a path to a .cfg search scenario");
+    }
+
+    const bh::EquatorialPenroseDijkstraInput input =
+        bh::load_equatorial_penrose_dijkstra_input(argv[2]);
+    const bh::PenroseDijkstraSearchResult result =
+        bh::find_penrose_dijkstra_path(input.scenario, input.search);
+    print_penrose_dijkstra_result(input, result);
+}
+
+void run_penrose_phase_map(const int argc, char* argv[]) {
+    if (argc != 3) {
+        throw std::invalid_argument("--map-penrose requires a path to a .cfg search scenario");
+    }
+
+    const bh::EquatorialPenroseDijkstraInput input =
+        bh::load_equatorial_penrose_dijkstra_input(argv[2]);
+    const bh::PenrosePhaseMapResult result =
+        bh::evaluate_penrose_phase_map(input.scenario, input.search);
+    print_penrose_phase_map_result(input, result);
 }
 
 constexpr double normalized_kerr_mass = 1.0;
@@ -527,6 +719,14 @@ int main(const int argc, char* argv[]) {
         }
         if (argc >= 2 && std::string_view(argv[1]) == "--scenario") {
             run_penrose_event(argc, argv);
+            return 0;
+        }
+        if (argc >= 2 && std::string_view(argv[1]) == "--search-penrose") {
+            run_penrose_dijkstra(argc, argv);
+            return 0;
+        }
+        if (argc >= 2 && std::string_view(argv[1]) == "--map-penrose") {
+            run_penrose_phase_map(argc, argv);
             return 0;
         }
 

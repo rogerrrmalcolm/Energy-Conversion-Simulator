@@ -2,8 +2,10 @@
 
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -51,16 +53,43 @@ std::size_t parse_size(const std::string_view value, const std::size_t line_numb
     }
     return parsed;
 }
-}  // namespace
 
-EquatorialPenroseEventInput load_equatorial_penrose_event_input(
-    const std::filesystem::path& path) {
+std::chrono::milliseconds parse_milliseconds(const std::string_view value,
+                                             const std::size_t line_number,
+                                             const std::string_view key) {
+    const std::size_t parsed = parse_size(value, line_number, key);
+    if (parsed > static_cast<std::size_t>(
+                     std::numeric_limits<std::chrono::milliseconds::rep>::max())) {
+        throw std::invalid_argument(
+            line_error(line_number, "value is too large for '" + std::string(key) + "'"));
+    }
+    return std::chrono::milliseconds(
+        static_cast<std::chrono::milliseconds::rep>(parsed));
+}
+
+struct ParsedPenroseInput {
+    EquatorialPenroseEventInput event{};
+    PenroseDijkstraSearchConfig search{};
+};
+
+void require_keys(const std::unordered_set<std::string>& seen_keys,
+                  const std::string_view* keys, const std::size_t key_count) {
+    for (std::size_t index = 0; index < key_count; ++index) {
+        if (!seen_keys.contains(std::string(keys[index]))) {
+            throw std::invalid_argument("scenario is missing required key '" +
+                                        std::string(keys[index]) + "'");
+        }
+    }
+}
+
+ParsedPenroseInput load_penrose_input(const std::filesystem::path& path,
+                                      const bool require_search) {
     std::ifstream file(path);
     if (!file) {
         throw std::invalid_argument("could not open scenario file: " + path.string());
     }
 
-    EquatorialPenroseEventInput input;
+    ParsedPenroseInput input;
     std::unordered_set<std::string> seen_keys;
     bool has_version = false;
     std::size_t scenario_version{};
@@ -98,47 +127,83 @@ EquatorialPenroseEventInput load_equatorial_penrose_event_input(
             scenario_version = parse_size(value, line_number, key);
             has_version = true;
         } else if (key == "black_hole_mass") {
-            input.scenario.black_hole_mass = parse_double(value, line_number, key);
+            input.event.scenario.black_hole_mass = parse_double(value, line_number, key);
         } else if (key == "dimensionless_spin") {
-            input.scenario.dimensionless_spin = parse_double(value, line_number, key);
+            input.event.scenario.dimensionless_spin = parse_double(value, line_number, key);
         } else if (key == "parent_rest_mass") {
-            input.scenario.parent_rest_mass = parse_double(value, line_number, key);
+            input.event.scenario.parent_rest_mass = parse_double(value, line_number, key);
         } else if (key == "fragment_rest_mass") {
-            input.scenario.fragment_rest_mass = parse_double(value, line_number, key);
+            input.event.scenario.fragment_rest_mass = parse_double(value, line_number, key);
         } else if (key == "incoming_specific_energy") {
-            input.scenario.incoming_specific_energy = parse_double(value, line_number, key);
+            input.event.scenario.incoming_specific_energy = parse_double(value, line_number, key);
         } else if (key == "initial_radius_over_m") {
-            input.scenario.initial_radius_over_m = parse_double(value, line_number, key);
+            input.event.scenario.initial_radius_over_m = parse_double(value, line_number, key);
         } else if (key == "escape_radius_over_m") {
-            input.scenario.escape_radius_over_m = parse_double(value, line_number, key);
+            input.event.scenario.escape_radius_over_m = parse_double(value, line_number, key);
         } else if (key == "integration_step") {
-            input.scenario.integration_step = parse_double(value, line_number, key);
+            input.event.scenario.integration_step = parse_double(value, line_number, key);
         } else if (key == "max_integration_steps") {
-            input.scenario.max_integration_steps = parse_size(value, line_number, key);
+            input.event.scenario.max_integration_steps = parse_size(value, line_number, key);
         } else if (key == "integration_absolute_tolerance") {
-            input.scenario.integration_control.absolute_tolerance =
+            input.event.scenario.integration_control.absolute_tolerance =
                 parse_double(value, line_number, key);
         } else if (key == "integration_relative_tolerance") {
-            input.scenario.integration_control.relative_tolerance =
+            input.event.scenario.integration_control.relative_tolerance =
                 parse_double(value, line_number, key);
         } else if (key == "integration_minimum_step") {
-            input.scenario.integration_control.minimum_step =
+            input.event.scenario.integration_control.minimum_step =
                 parse_double(value, line_number, key);
         } else if (key == "residual_tolerance") {
-            input.scenario.residual_tolerance = parse_double(value, line_number, key);
+            input.event.scenario.residual_tolerance = parse_double(value, line_number, key);
         } else if (key == "split_radius_over_m") {
-            input.split.split_radius_over_m = parse_double(value, line_number, key);
+            input.event.split.split_radius_over_m = parse_double(value, line_number, key);
         } else if (key == "incoming_lz_over_m_m") {
-            input.split.incoming_lz_over_m_m = parse_double(value, line_number, key);
+            input.event.split.incoming_lz_over_m_m = parse_double(value, line_number, key);
         } else if (key == "split_angle_rad") {
-            input.split.split_angle_rad = parse_double(value, line_number, key);
+            input.event.split.split_angle_rad = parse_double(value, line_number, key);
+        } else if (require_search && key == "search_eta_target") {
+            input.search.eta_target = parse_double(value, line_number, key);
+        } else if (require_search && key == "search_split_radius_lower") {
+            input.search.lower_bound.split_radius_over_m = parse_double(value, line_number, key);
+        } else if (require_search && key == "search_split_radius_upper") {
+            input.search.upper_bound.split_radius_over_m = parse_double(value, line_number, key);
+        } else if (require_search && key == "search_split_radius_step") {
+            input.search.step.split_radius_over_m = parse_double(value, line_number, key);
+        } else if (require_search && key == "search_incoming_lz_lower") {
+            input.search.lower_bound.incoming_lz_over_m_m = parse_double(value, line_number, key);
+        } else if (require_search && key == "search_incoming_lz_upper") {
+            input.search.upper_bound.incoming_lz_over_m_m = parse_double(value, line_number, key);
+        } else if (require_search && key == "search_incoming_lz_step") {
+            input.search.step.incoming_lz_over_m_m = parse_double(value, line_number, key);
+        } else if (require_search && key == "search_split_angle_lower") {
+            input.search.lower_bound.split_angle_rad = parse_double(value, line_number, key);
+        } else if (require_search && key == "search_split_angle_upper") {
+            input.search.upper_bound.split_angle_rad = parse_double(value, line_number, key);
+        } else if (require_search && key == "search_split_angle_step") {
+            input.search.step.split_angle_rad = parse_double(value, line_number, key);
+        } else if (require_search && key == "search_radius_step_cost") {
+            input.search.edge_costs[0] = parse_size(value, line_number, key);
+        } else if (require_search && key == "search_incoming_lz_step_cost") {
+            input.search.edge_costs[1] = parse_size(value, line_number, key);
+        } else if (require_search && key == "search_split_angle_step_cost") {
+            input.search.edge_costs[2] = parse_size(value, line_number, key);
+        } else if (require_search && key == "search_max_evaluations") {
+            input.search.max_evaluations = parse_size(value, line_number, key);
+        } else if (require_search && key == "search_time_budget_ms") {
+            input.search.time_budget = parse_milliseconds(value, line_number, key);
+        } else if (require_search && key == "search_algorithm") {
+            if (value != "dijkstra_h_zero") {
+                throw std::invalid_argument(line_error(
+                    line_number, "only search_algorithm = dijkstra_h_zero is supported"));
+            }
+            input.search.algorithm = PenroseSearchAlgorithm::dijkstra_h_zero;
         } else {
             throw std::invalid_argument(
                 line_error(line_number, "unknown scenario key '" + std::string(key) + "'"));
         }
     }
 
-    constexpr std::array<std::string_view, 17> required_keys{
+    constexpr std::array<std::string_view, 17> event_keys{
         "scenario_version",
         "black_hole_mass",
         "dimensionless_spin",
@@ -156,15 +221,45 @@ EquatorialPenroseEventInput load_equatorial_penrose_event_input(
         "split_radius_over_m",
         "incoming_lz_over_m_m",
         "split_angle_rad"};
-    for (const std::string_view key : required_keys) {
-        if (!seen_keys.contains(std::string(key))) {
-            throw std::invalid_argument("scenario is missing required key '" + std::string(key) + "'");
-        }
+    require_keys(seen_keys, event_keys.data(), event_keys.size());
+
+    if (require_search) {
+        constexpr std::array<std::string_view, 16> search_keys{
+            "search_eta_target",
+            "search_split_radius_lower",
+            "search_split_radius_upper",
+            "search_split_radius_step",
+            "search_incoming_lz_lower",
+            "search_incoming_lz_upper",
+            "search_incoming_lz_step",
+            "search_split_angle_lower",
+            "search_split_angle_upper",
+            "search_split_angle_step",
+            "search_radius_step_cost",
+            "search_incoming_lz_step_cost",
+            "search_split_angle_step_cost",
+            "search_max_evaluations",
+            "search_time_budget_ms",
+            "search_algorithm"};
+        require_keys(seen_keys, search_keys.data(), search_keys.size());
     }
     if (!has_version || scenario_version != 1) {
         throw std::invalid_argument("unsupported scenario_version; expected 1");
     }
 
+    input.search.start = input.event.split;
     return input;
+}
+}  // namespace
+
+EquatorialPenroseEventInput load_equatorial_penrose_event_input(
+    const std::filesystem::path& path) {
+    return load_penrose_input(path, false).event;
+}
+
+EquatorialPenroseDijkstraInput load_equatorial_penrose_dijkstra_input(
+    const std::filesystem::path& path) {
+    const ParsedPenroseInput input = load_penrose_input(path, true);
+    return {input.event.scenario, input.search};
 }
 }  // namespace bh

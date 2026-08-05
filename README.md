@@ -116,6 +116,43 @@ Evaluate one explicit Penrose event:
 
 The reference file is a reproducible normalized test-particle case. It is intentionally labelled idealized; it is not an astrophysical observation.
 
+Search a bounded Penrose parameter grid with Dijkstra:
+
+~~~powershell
+.\build\black_hole_demo.exe --search-penrose .\scenarios\equatorial_penrose_dijkstra_reference.cfg
+~~~
+
+The reference search starts at `r_split/M = 1.09`, changes one radius-grid step to `1.10`, and reaches a validated event above its declared 4 percent efficiency target. Its trace is a record of parameter adjustments, not a particle trajectory.
+
+Search for a physically valid event reaching 15 percent net efficiency across
+the full `0.01 M` split-radius grid inside the equatorial ergosphere:
+
+~~~powershell
+.\build\black_hole_demo.exe --search-penrose .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
+~~~
+
+For the scenario's `a_star = 0.999`, the outer horizon is approximately
+`1.04471018 M` and the equatorial static limit is `2 M`; therefore, the declared
+radius grid is `1.05 M` through `1.99 M`. These are open physical boundaries,
+so neither boundary itself is a candidate. The angular-momentum and split-angle
+bounds remain independent exploratory choices. A failed search means no valid
+15 percent event exists in this declared 2,375-candidate grid, not that such an
+event is impossible throughout the continuous physical domain.
+
+With the current restricted evaluator, the completed map of this grid finds no
+15 percent goal. Its best validated candidate is `(1.14, 2.09, -1.98)` at
+`9.065063%` net extraction. Because both non-radius coordinates lie on their
+upper bounds, the next domain study should expand `incoming_lz_over_m_m` and
+`split_angle_rad` while retaining explicit finite bounds.
+
+Exhaustively map the same bounded candidate grid:
+
+~~~powershell
+.\build\black_hole_demo.exe --map-penrose .\scenarios\equatorial_penrose_dijkstra_reference.cfg
+~~~
+
+`--map-penrose` is intentionally different from Dijkstra. It evaluates every candidate within the declared bounds, then reports the greatest *validated net extraction found within that fully evaluated grid*. It does not claim a global physical maximum. The reference map evaluates 125 candidates; use its printed elapsed time as the local performance measurement for your machine.
+
 Evaluate one reduced toy-plasma transport estimate:
 
 ~~~powershell
@@ -138,11 +175,36 @@ Kerr and Penrose use the same selected black hole in normalized geometrized coor
 
 The Kerr menu asks only for an orbit's `E`, `Lz`, rest mass, direction, and boundaries. The Penrose menu asks only for the parent/fragment properties and split parameters; it reuses the shared spin and Kerr integration controls, then delegates incoming, capture, and escape path validation to the Kerr integrator. The toy-plasma baseline reuses shared spin; its reduced formula does not use mass.
 
-A basic deterministic Dijkstra grid baseline now exists in `src/optimization/dijkstra.cpp`. It searches three bounded integer coordinates with six one-step neighbors and unit adjustment costs. It is deliberately only a tested graph-algorithm baseline: it does not yet call the Penrose evaluator or appear in the CLI. The future physics connection will keep the black-hole session fixed and vary only `split_radius_over_m`, `incoming_lz_over_m_m`, and `split_angle_rad`.
+### Deterministic Penrose parameter search
+
+The Dijkstra layer keeps one declared `EquatorialPenroseScenario` fixed: black-hole mass and spin, particle masses, incoming specific energy, integration controls, residual tolerance, and escape radius do not change during a run. It varies only these normalized candidate parameters:
+
+- `split_radius_over_m`;
+- `incoming_lz_over_m_m`;
+- `split_angle_rad`.
+
+The search stores a node as three canonical integer grid indices, then derives the three floating-point split values from the configured lower bounds and steps. This prevents equivalent floating-point values from producing duplicate graph nodes. A node evaluation calls `evaluate_equatorial_penrose_event`; Dijkstra itself does not calculate a geodesic or Penrose split.
+
+The only supported algorithm is `dijkstra_h_zero`: `h = 0`, `f = g`, and every one-coordinate, one-grid-step edge has a declared cost of exactly `1`. Therefore, the returned goal has the fewest parameter adjustments from the declared start among the searched candidates. The goal predicate requires a physically feasible event, positive net extracted energy, residuals within tolerance, and `eta_penrose >= search_eta_target`. A returned `parameter_adjustment_path` is not the path of a particle through spacetime. The physical incoming, captured, and escaping trajectories shown in the CLI come only from the freshly re-evaluated selected goal event.
+
+The search has explicit terminal statuses: `found_goal`, `no_solution_within_bounds`, `target_unattainable_under_model`, `node_budget_exhausted`, `time_budget_exhausted`, `cancelled`, and `evaluation_failure`. A target at or above the ideal 20.710678 percent extremal single-split limit returns `target_unattainable_under_model` before evaluating candidates. This is separate from the roughly 29 percent theoretical rotational-reservoir limit.
+
+The search is a threshold solver, not proof that its first answer has globally maximum extraction. A 15 percent target means `E_escape >= 1.15 * E_input`; if no bounded candidate reaches that target, `no_solution_within_bounds` is the correct result. Use `--map-penrose` only to make a bounded-grid maximum claim, or use a later constrained optimizer before making a broader maximum-energy claim.
+
+### Resolution and performance guide
+
+Use this sequence when improving a search scenario:
+
+1. Run a coarse Dijkstra search and record its target, selected parameters, `g` cost, residual, node counts, and elapsed time.
+2. Halve one or more grid steps while keeping the start and bounds exactly aligned to the new grid. Increase `search_max_evaluations` to cover the larger domain.
+3. Repeat the search. A stable conclusion means both grids find a feasible target with similar validated parameters and energy; it is not proof of a global optimum.
+4. Run `--map-penrose` only when the full grid fits the declared budget. Its maximum is valid only when the result status is `completed`.
+
+The implementation is intentionally scalar and single-threaded. Geodesic integration dominates the workload, so the search first reduces memory pressure by caching compact status and ledger values keyed by canonical integer grid key. It does not retain full trajectory vectors for every evaluated node; it retains them only for the fresh final verification. Do not parallelize the priority queue or add SIMD until profiling a representative larger workload identifies a real bottleneck.
 
 The original argument-based commands and versioned Penrose scenario files remain the reproducible interface for benchmarks and tests.
 
-## Scenario file
+## Scenario files
 
 The scenarios/equatorial_penrose_reference.cfg file is a versioned key = value input. The loader rejects unknown keys, duplicate keys, malformed values, missing keys, and unsupported versions.
 
@@ -168,6 +230,29 @@ split_angle_rad
 
 All values in this file are normalized geometrized inputs except the dimensionless spin and angle, which is measured in radians. The integration tolerances govern adaptive RK4 error control; residual_tolerance is the maximum normalized conservation or geodesic-initialization residual allowed for a physically feasible Penrose event.
 
+`scenarios/equatorial_penrose_dijkstra_reference.cfg` contains the same fixed event fields plus this bounded-grid contract:
+
+~~~text
+search_eta_target
+search_split_radius_lower
+search_split_radius_upper
+search_split_radius_step
+search_incoming_lz_lower
+search_incoming_lz_upper
+search_incoming_lz_step
+search_split_angle_lower
+search_split_angle_upper
+search_split_angle_step
+search_radius_step_cost
+search_incoming_lz_step_cost
+search_split_angle_step_cost
+search_max_evaluations
+search_time_budget_ms
+search_algorithm
+~~~
+
+The declared `split_*` values are the Dijkstra start candidate. Each lower-to-upper interval must be an exact multiple of its declared positive step, and the start must lie on that grid. The split-radius bounds must remain strictly inside the equatorial ergosphere. All three `search_*_step_cost` values must be `1`; this project intentionally rejects weighted costs until a defensible preference is defined. `search_max_evaluations` is required and positive. `search_time_budget_ms = 0` disables a wall-clock limit for a reproducible reference run. `search_algorithm` must be `dijkstra_h_zero`.
+
 ## Validation
 
 model_tests checks:
@@ -181,7 +266,8 @@ model_tests checks:
 - a local Penrose split with conservation residual checks;
 - an analytic radial Schwarzschild-limit Kerr infall and adaptive-step rejection/refinement;
 - scale invariance of the normalized Penrose efficiency;
-- a deterministic bounded three-coordinate Dijkstra baseline, including shortest-path, tie-break, and bounds tests;
+- deterministic bounded Dijkstra graph behavior, parent reconstruction, unit costs, duplicate suppression, fixed tie breaking, cancellation, explicit budgets, unreachable targets, and unattainable-limit rejection;
+- physics-backed Penrose search with a fresh final-event verification, plus a bounded exhaustive phase map and coarse-versus-fine grid-resolution check;
 - rejection of a split outside the ergosphere;
 - loading, rejecting malformed scenarios, and executing the versioned reference scenario;
 - CLI help, algebraic, uncertainty-range, valid-Penrose, and rejected-scenario workflows;
@@ -193,7 +279,7 @@ model_tests checks:
 - Kerr motion is equatorial only, has Q = 0, uses adaptive RK4, and does not yet continue through radial turning points. E and L_z are fixed input constants rather than separately evolved variables, so the reported radial-first-integral residual is the invariant check available to this restricted solver.
 - The Penrose model is a neutral, idealized two-body test-particle split with identical daughter rest masses and an immediate inward/outward branch requirement. It has no charged-particle fields, radiation reaction, backreaction, collision model, nuclear fragmentation model, unequal daughter masses, or GRMHD.
 - The plasma component is a reduced, ideal-MHD-inspired toy transport model with a heuristic spin factor, not an MHD or GRMHD solution.
-- The Dijkstra layer currently searches only a toy integer grid. Connecting it to Penrose candidates, physical goal states, scenario files, and CLI output is the next optimization milestone; its returned path must never be presented as a particle trajectory.
+- Dijkstra assigns unit cost to every one-step parameter adjustment. That is a transparent baseline for minimum-change search, not a physical impulse, elapsed-time, or energy cost. A heuristic is deliberately disabled because no admissible lower bound on efficiency improvement per step has been proven.
 - Multithreading and SIMD are deliberately deferred until scalar correctness, integration error control, and invariant monitoring are expanded and profiled.
 
 ## CMake library
