@@ -6,6 +6,10 @@
 #include <optional>
 #include <stdexcept>
 
+#if defined(BH_ENABLE_AVX2)
+#include <immintrin.h>
+#endif
+
 namespace bh {
 namespace {
 constexpr double potential_tolerance = 1.0e-12;
@@ -600,6 +604,63 @@ double kerr_radial_potential(const KerrOrbit& orbit, const double radius) {
         p * p - delta * (orbit.rest_mass * orbit.rest_mass * radius * radius +
                          offset * offset + orbit.carter_constant),
         "Kerr radial potential overflowed");
+}
+
+std::array<double, avx2_double_lanes> kerr_radial_potential_batch4(
+    const KerrRadialPotentialBatch4& batch) {
+#if defined(BH_ENABLE_AVX2)
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        validate_orbit({batch.black_hole_masses[lane], batch.spin_lengths[lane],
+                        batch.energies[lane], batch.angular_momenta[lane],
+                        batch.rest_masses[lane], 1, batch.carter_constants[lane]});
+        if (!std::isfinite(batch.radii[lane]) || batch.radii[lane] <= 0.0) {
+            throw std::invalid_argument("radius must be finite and positive");
+        }
+    }
+
+    const __m256d mass = _mm256_loadu_pd(batch.black_hole_masses.data());
+    const __m256d spin = _mm256_loadu_pd(batch.spin_lengths.data());
+    const __m256d energy = _mm256_loadu_pd(batch.energies.data());
+    const __m256d angular_momentum = _mm256_loadu_pd(batch.angular_momenta.data());
+    const __m256d rest_mass = _mm256_loadu_pd(batch.rest_masses.data());
+    const __m256d carter_constant = _mm256_loadu_pd(batch.carter_constants.data());
+    const __m256d radius = _mm256_loadu_pd(batch.radii.data());
+    const __m256d radius_squared = _mm256_mul_pd(radius, radius);
+    const __m256d spin_squared = _mm256_mul_pd(spin, spin);
+    const __m256d delta = _mm256_add_pd(
+        _mm256_sub_pd(radius_squared,
+                      _mm256_mul_pd(_mm256_set1_pd(2.0), _mm256_mul_pd(mass, radius))),
+        spin_squared);
+    const __m256d p = _mm256_sub_pd(
+        _mm256_mul_pd(energy, _mm256_add_pd(radius_squared, spin_squared)),
+        _mm256_mul_pd(spin, angular_momentum));
+    const __m256d offset =
+        _mm256_sub_pd(angular_momentum, _mm256_mul_pd(spin, energy));
+    const __m256d rest_mass_term = _mm256_mul_pd(
+        _mm256_mul_pd(_mm256_mul_pd(rest_mass, rest_mass), radius), radius);
+    const __m256d potential = _mm256_sub_pd(
+        _mm256_mul_pd(p, p),
+        _mm256_mul_pd(delta,
+                      _mm256_add_pd(_mm256_add_pd(rest_mass_term,
+                                                  _mm256_mul_pd(offset, offset)),
+                                    carter_constant)));
+
+    std::array<double, avx2_double_lanes> result{};
+    _mm256_storeu_pd(result.data(), potential);
+    for (const double value : result) {
+        finite_or_throw(value, "Kerr radial potential overflowed");
+    }
+    return result;
+#else
+    std::array<double, avx2_double_lanes> result{};
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        const KerrOrbit orbit{batch.black_hole_masses[lane], batch.spin_lengths[lane],
+                              batch.energies[lane], batch.angular_momenta[lane],
+                              batch.rest_masses[lane], 1, batch.carter_constants[lane]};
+        result[lane] = kerr_radial_potential(orbit, batch.radii[lane]);
+    }
+    return result;
+#endif
 }
 
 KerrFourMomentum kerr_equatorial_four_momentum(const KerrOrbit& orbit,

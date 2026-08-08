@@ -72,6 +72,21 @@ int main() {
     near(bh::classical_penrose_efficiency_limit(), (std::sqrt(2.0) - 1.0) / 2.0, 1e-15,
          "classical ideal Penrose efficiency limit is approximately 20.71 percent");
 
+    bh::PenroseEnergyBatch4Input energy_batch;
+    energy_batch.input_energies = {1.0, 2.0, 4.0, 8.0};
+    energy_batch.escaping_energies = {1.15, 1.5, 4.0, 10.0};
+    const auto energy_batch_result = bh::penrose_energy_extraction_batch4(energy_batch);
+    for (std::size_t lane = 0; lane < bh::avx2_double_lanes; ++lane) {
+        const double difference =
+            energy_batch.escaping_energies[lane] - energy_batch.input_energies[lane];
+        near_relative(energy_batch_result.eta_penrose[lane],
+                      difference / energy_batch.input_energies[lane], 1.0e-14,
+                      "four-lane Penrose efficiency matches scalar arithmetic");
+        near_relative(energy_batch_result.extracted_energies[lane],
+                      std::max(0.0, difference), 1.0e-14,
+                      "four-lane Penrose extraction matches scalar arithmetic");
+    }
+
     const auto uncertain = bh::rotational_energy(
         {bh::solar_mass_kg, 0.9, {0.8, 0.9, 0.99}});
     check(uncertain.rotational_energy_lower_joules < uncertain.rotational_energy_joules,
@@ -187,6 +202,25 @@ int main() {
           "equatorial point between horizon and static limit is in ergosphere");
     const bh::KerrOrbit outward{1.0, 0.5, 1.0, 0.0, 1.0, 1};
     check(bh::kerr_radial_potential(outward, 10.0) >= 0.0, "Kerr test orbit is admissible");
+    bh::KerrRadialPotentialBatch4 radial_batch;
+    radial_batch.black_hole_masses = {1.0, 1.0, 2.0, 1.0};
+    radial_batch.spin_lengths = {0.5, 0.8, 1.0, 0.2};
+    radial_batch.energies = {1.0, 0.95, 2.0, 1.1};
+    radial_batch.angular_momenta = {0.0, 2.0, -1.0, 0.5};
+    radial_batch.rest_masses = {1.0, 1.0, 0.0, 1.0};
+    radial_batch.carter_constants = {0.0, 0.0, 0.0, 0.0};
+    radial_batch.radii = {10.0, 5.0, 8.0, 3.0};
+    const auto radial_batch_result = bh::kerr_radial_potential_batch4(radial_batch);
+    for (std::size_t lane = 0; lane < bh::avx2_double_lanes; ++lane) {
+        const bh::KerrOrbit lane_orbit{
+            radial_batch.black_hole_masses[lane], radial_batch.spin_lengths[lane],
+            radial_batch.energies[lane], radial_batch.angular_momenta[lane],
+            radial_batch.rest_masses[lane], 1, radial_batch.carter_constants[lane]};
+        near_relative(radial_batch_result[lane],
+                      bh::kerr_radial_potential(lane_orbit, radial_batch.radii[lane]),
+                      1.0e-14,
+                      "four-lane Kerr radial potential matches the scalar kernel");
+    }
     const auto escaping = bh::integrate_kerr(outward, 10.0, 0.01, 10'000, 11.0);
     check(escaping.termination == bh::TrajectoryTermination::reached_escape_radius,
           "outward Kerr trajectory reaches escape radius");

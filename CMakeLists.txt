@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(BH_BUILD_TESTS "Build the black-hole model tests" ON)
+option(BH_ENABLE_AVX2 "Build the four-lane AVX2 numerical kernels" OFF)
 
 add_library(black_hole_models
     src/physics/algebraic_model.cpp
@@ -27,6 +28,17 @@ target_include_directories(black_hole_models
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
+if(BH_ENABLE_AVX2)
+    target_compile_definitions(black_hole_models PRIVATE BH_ENABLE_AVX2=1)
+    if(MSVC)
+        target_compile_options(black_hole_models PRIVATE /arch:AVX2)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(black_hole_models PRIVATE -mavx2)
+    else()
+        message(FATAL_ERROR "BH_ENABLE_AVX2 requires an MSVC, GCC, or Clang x86 compiler")
+    endif()
+endif()
 
 if(MSVC)
     target_compile_options(black_hole_models PRIVATE /W4 /permissive-)

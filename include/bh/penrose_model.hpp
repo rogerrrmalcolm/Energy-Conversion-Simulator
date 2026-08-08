@@ -2,6 +2,7 @@
 
 #include "bh/kerr_geodesic.hpp"
 
+#include <array>
 #include <cstddef>
 #include <string_view>
 
@@ -61,11 +62,24 @@ struct PenroseEventResult {
     Trajectory escaping_trajectory{};
 };
 
+struct PenroseEnergyBatch4Input {
+    std::array<double, avx2_double_lanes> input_energies{};
+    std::array<double, avx2_double_lanes> escaping_energies{};
+};
+
+struct PenroseEnergyBatch4Result {
+    std::array<double, avx2_double_lanes> eta_penrose{};
+    std::array<double, avx2_double_lanes> extracted_energies{};
+};
+
 [[nodiscard]] constexpr double classical_penrose_efficiency_limit() {
     return 0.20710678118654752440;
 }
 
 [[nodiscard]] std::string_view penrose_event_status_name(PenroseEventStatus status);
+// Computes only the four-lane energy ledger; geodesics still establish event validity.
+[[nodiscard]] PenroseEnergyBatch4Result penrose_energy_extraction_batch4(
+    const PenroseEnergyBatch4Input& input);
 [[nodiscard]] PenroseEventResult evaluate_equatorial_penrose_event(
     const EquatorialPenroseScenario& scenario, const PenroseSplitParameters& split);
 }

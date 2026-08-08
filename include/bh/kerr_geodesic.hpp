@@ -2,6 +2,7 @@
 
 #include "bh/trajectory.hpp"
 
+#include <array>
 #include <cstddef>
 
 namespace bh {
@@ -32,6 +33,19 @@ struct KerrIntegrationControl {
     double minimum_step{0.0};
 };
 
+inline constexpr std::size_t avx2_double_lanes = 4;
+
+// Structure-of-arrays input for one AVX2 register of radial-potential states.
+struct KerrRadialPotentialBatch4 {
+    std::array<double, avx2_double_lanes> black_hole_masses{};
+    std::array<double, avx2_double_lanes> spin_lengths{};
+    std::array<double, avx2_double_lanes> energies{};
+    std::array<double, avx2_double_lanes> angular_momenta{};
+    std::array<double, avx2_double_lanes> rest_masses{};
+    std::array<double, avx2_double_lanes> carter_constants{};
+    std::array<double, avx2_double_lanes> radii{};
+};
+
 [[nodiscard]] double kerr_spin_length(double mass, double dimensionless_spin);
 [[nodiscard]] double kerr_inner_horizon(double mass, double spin_length);
 [[nodiscard]] double kerr_outer_horizon(double mass, double spin_length);
@@ -42,6 +56,8 @@ struct KerrIntegrationControl {
 [[nodiscard]] double kerr_delta(double mass, double spin_length, double radius);
 [[nodiscard]] double kerr_equatorial_sigma(double radius);
 [[nodiscard]] double kerr_radial_potential(const KerrOrbit& orbit, double radius);
+[[nodiscard]] std::array<double, avx2_double_lanes> kerr_radial_potential_batch4(
+    const KerrRadialPotentialBatch4& batch);
 [[nodiscard]] KerrFourMomentum kerr_equatorial_four_momentum(const KerrOrbit& orbit,
                                                                double radius);
 [[nodiscard]] Trajectory integrate_kerr(const KerrOrbit& orbit, double initial_radius,

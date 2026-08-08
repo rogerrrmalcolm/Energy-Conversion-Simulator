@@ -6,6 +6,10 @@
 #include <limits>
 #include <stdexcept>
 
+#if defined(BH_ENABLE_AVX2)
+#include <immintrin.h>
+#endif
+
 namespace bh {
 namespace {
 struct LocalMomentum {
@@ -225,6 +229,43 @@ std::string_view penrose_event_status_name(const PenroseEventStatus status) {
         return "integration_failed";
     }
     return "unknown";
+}
+
+PenroseEnergyBatch4Result penrose_energy_extraction_batch4(
+    const PenroseEnergyBatch4Input& input) {
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (!std::isfinite(input.input_energies[lane]) ||
+            !std::isfinite(input.escaping_energies[lane]) ||
+            input.input_energies[lane] <= 0.0) {
+            throw std::invalid_argument(
+                "Penrose energy batch requires finite escaping energy and positive input energy");
+        }
+    }
+
+    PenroseEnergyBatch4Result result;
+#if defined(BH_ENABLE_AVX2)
+    const __m256d input_energy = _mm256_loadu_pd(input.input_energies.data());
+    const __m256d escaping_energy = _mm256_loadu_pd(input.escaping_energies.data());
+    const __m256d difference = _mm256_sub_pd(escaping_energy, input_energy);
+    const __m256d eta = _mm256_div_pd(difference, input_energy);
+    const __m256d extracted = _mm256_max_pd(difference, _mm256_setzero_pd());
+    _mm256_storeu_pd(result.eta_penrose.data(), eta);
+    _mm256_storeu_pd(result.extracted_energies.data(), extracted);
+#else
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        const double difference =
+            input.escaping_energies[lane] - input.input_energies[lane];
+        result.eta_penrose[lane] = difference / input.input_energies[lane];
+        result.extracted_energies[lane] = std::max(0.0, difference);
+    }
+#endif
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (!std::isfinite(result.eta_penrose[lane]) ||
+            !std::isfinite(result.extracted_energies[lane])) {
+            throw std::overflow_error("Penrose energy batch overflowed");
+        }
+    }
+    return result;
 }
 
 PenroseEventResult evaluate_equatorial_penrose_event(
