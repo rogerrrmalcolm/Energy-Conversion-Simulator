@@ -12,6 +12,49 @@
 
 namespace bh {
 namespace {
+#if defined(BH_ENABLE_AVX2)
+__m256d load4(const DoubleBatch4& values) {
+    return _mm256_loadu_pd(values.data());
+}
+
+void store4(DoubleBatch4* output, const __m256d values) {
+    _mm256_storeu_pd(output->data(), values);
+}
+
+__m256d abs4(const __m256d values) {
+    return _mm256_andnot_pd(_mm256_set1_pd(-0.0), values);
+}
+
+void split_component_batch4(const DoubleBatch4& parent, const DoubleBatch4& radial_basis,
+                            const DoubleBatch4& azimuth_basis, const __m256d cosines,
+                            const __m256d sines, const __m256d daughter_energy,
+                            const __m256d daughter_momentum, DoubleBatch4* first,
+                            DoubleBatch4* second) {
+    const __m256d direction = _mm256_add_pd(
+        _mm256_mul_pd(load4(radial_basis), cosines),
+        _mm256_mul_pd(load4(azimuth_basis), sines));
+    const __m256d center = _mm256_mul_pd(load4(parent), daughter_energy);
+    const __m256d offset = _mm256_mul_pd(direction, daughter_momentum);
+    store4(first, _mm256_add_pd(center, offset));
+    store4(second, _mm256_sub_pd(center, offset));
+}
+#endif
+
+bool finite_batch4(const DoubleBatch4& values) {
+    return std::all_of(values.begin(), values.end(),
+                       [](const double value) { return std::isfinite(value); });
+}
+
+bool finite_local_batch4(const PenroseLocalMomentumBatch4& momenta) {
+    return finite_batch4(momenta.time) && finite_batch4(momenta.radial) &&
+           finite_batch4(momenta.azimuth);
+}
+
+bool finite_coordinate_batch4(const KerrFourMomentumBatch4& momenta) {
+    return finite_batch4(momenta.coordinate_time) && finite_batch4(momenta.radial) &&
+           finite_batch4(momenta.azimuth);
+}
+
 struct LocalMomentum {
     double time{};
     double radial{};
@@ -27,6 +70,15 @@ struct EquatorialMetric {
     double lapse{};
     double frame_dragging_omega{};
 };
+
+#if defined(BH_ENABLE_AVX2)
+struct ZamoMetricBatch4 {
+    DoubleBatch4 lapse{};
+    DoubleBatch4 sqrt_delta{};
+    DoubleBatch4 sqrt_g_phiphi{};
+    DoubleBatch4 frame_dragging_omega{};
+};
+#endif
 
 struct ConservedConstants {
     double energy{};
@@ -130,6 +182,22 @@ EquatorialMetric equatorial_metric(const double mass, const double spin_length,
             radius * std::sqrt(delta) / std::sqrt(a_term),
             2.0 * mass * spin_length * radius / a_term};
 }
+
+#if defined(BH_ENABLE_AVX2)
+ZamoMetricBatch4 zamo_metric_batch4(const PenroseZamoGeometryBatch4& geometry) {
+    ZamoMetricBatch4 result;
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        const EquatorialMetric metric = equatorial_metric(
+            geometry.black_hole_masses[lane], geometry.spin_lengths[lane],
+            geometry.radii[lane]);
+        result.lapse[lane] = metric.lapse;
+        result.sqrt_delta[lane] = std::sqrt(metric.delta);
+        result.sqrt_g_phiphi[lane] = std::sqrt(metric.g_phiphi);
+        result.frame_dragging_omega[lane] = metric.frame_dragging_omega;
+    }
+    return result;
+}
+#endif
 
 LocalMomentum coordinate_to_zamo(const double mass, const double spin_length,
                                  const double radius, const KerrFourMomentum& momentum) {
@@ -264,6 +332,254 @@ PenroseEnergyBatch4Result penrose_energy_extraction_batch4(
             !std::isfinite(result.extracted_energies[lane])) {
             throw std::overflow_error("Penrose energy batch overflowed");
         }
+    }
+    return result;
+}
+
+PenroseLocalMomentumBatch4 coordinate_to_zamo_batch4(
+    const PenroseZamoGeometryBatch4& geometry,
+    const KerrFourMomentumBatch4& coordinate_momenta) {
+    if (!finite_coordinate_batch4(coordinate_momenta)) {
+        throw std::invalid_argument("ZAMO coordinate momenta must be finite");
+    }
+
+    PenroseLocalMomentumBatch4 result;
+#if defined(BH_ENABLE_AVX2)
+    const ZamoMetricBatch4 metric = zamo_metric_batch4(geometry);
+    const __m256d coordinate_time = load4(coordinate_momenta.coordinate_time);
+    store4(&result.time, _mm256_mul_pd(load4(metric.lapse), coordinate_time));
+    store4(&result.radial,
+           _mm256_div_pd(
+               _mm256_mul_pd(load4(geometry.radii), load4(coordinate_momenta.radial)),
+               load4(metric.sqrt_delta)));
+    store4(&result.azimuth,
+           _mm256_mul_pd(
+               load4(metric.sqrt_g_phiphi),
+               _mm256_sub_pd(load4(coordinate_momenta.azimuth),
+                             _mm256_mul_pd(load4(metric.frame_dragging_omega),
+                                           coordinate_time))));
+#else
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        const LocalMomentum local = coordinate_to_zamo(
+            geometry.black_hole_masses[lane], geometry.spin_lengths[lane],
+            geometry.radii[lane],
+            {coordinate_momenta.coordinate_time[lane], coordinate_momenta.radial[lane],
+             coordinate_momenta.azimuth[lane]});
+        result.time[lane] = local.time;
+        result.radial[lane] = local.radial;
+        result.azimuth[lane] = local.azimuth;
+    }
+#endif
+    if (!finite_local_batch4(result)) {
+        throw std::overflow_error("coordinate-to-ZAMO batch overflowed");
+    }
+    return result;
+}
+
+KerrFourMomentumBatch4 zamo_to_coordinate_batch4(
+    const PenroseZamoGeometryBatch4& geometry,
+    const PenroseLocalMomentumBatch4& local_momenta) {
+    if (!finite_local_batch4(local_momenta)) {
+        throw std::invalid_argument("ZAMO local momenta must be finite");
+    }
+
+    KerrFourMomentumBatch4 result;
+#if defined(BH_ENABLE_AVX2)
+    const ZamoMetricBatch4 metric = zamo_metric_batch4(geometry);
+    const __m256d coordinate_time =
+        _mm256_div_pd(load4(local_momenta.time), load4(metric.lapse));
+    store4(&result.coordinate_time, coordinate_time);
+    store4(&result.radial,
+           _mm256_div_pd(
+               _mm256_mul_pd(load4(local_momenta.radial), load4(metric.sqrt_delta)),
+               load4(geometry.radii)));
+    store4(&result.azimuth,
+           _mm256_add_pd(
+               _mm256_mul_pd(load4(metric.frame_dragging_omega), coordinate_time),
+               _mm256_div_pd(load4(local_momenta.azimuth),
+                             load4(metric.sqrt_g_phiphi))));
+#else
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        const KerrFourMomentum coordinate = zamo_to_coordinate(
+            geometry.black_hole_masses[lane], geometry.spin_lengths[lane],
+            geometry.radii[lane],
+            {local_momenta.time[lane], local_momenta.radial[lane],
+             local_momenta.azimuth[lane]});
+        result.coordinate_time[lane] = coordinate.coordinate_time;
+        result.radial[lane] = coordinate.radial;
+        result.azimuth[lane] = coordinate.azimuth;
+    }
+#endif
+    if (!finite_coordinate_batch4(result)) {
+        throw std::overflow_error("ZAMO-to-coordinate batch overflowed");
+    }
+    return result;
+}
+
+PenroseFragmentSplitBatch4Result split_penrose_fragments_batch4(
+    const PenroseFragmentSplitBatch4Input& input) {
+    if (!finite_local_batch4(input.parent_unit_velocities) ||
+        !finite_local_batch4(input.radial_bases) ||
+        !finite_local_batch4(input.azimuth_bases) ||
+        !finite_batch4(input.split_angles_rad) ||
+        !finite_batch4(input.daughter_com_energies) ||
+        !finite_batch4(input.daughter_com_momenta)) {
+        throw std::invalid_argument("Penrose split batch inputs must be finite");
+    }
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (input.daughter_com_energies[lane] <= 0.0 ||
+            input.daughter_com_momenta[lane] < 0.0) {
+            throw std::invalid_argument("Penrose daughter energies and momenta must be physical");
+        }
+    }
+
+    PenroseFragmentSplitBatch4Result result;
+#if defined(BH_ENABLE_AVX2)
+    DoubleBatch4 cosines{};
+    DoubleBatch4 sines{};
+    // AVX2 has no native trigonometric instructions; only these four lookups stay scalar.
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        cosines[lane] = std::cos(input.split_angles_rad[lane]);
+        sines[lane] = std::sin(input.split_angles_rad[lane]);
+    }
+    const __m256d cosine = load4(cosines);
+    const __m256d sine = load4(sines);
+    const __m256d daughter_energy = load4(input.daughter_com_energies);
+    const __m256d daughter_momentum = load4(input.daughter_com_momenta);
+    split_component_batch4(input.parent_unit_velocities.time, input.radial_bases.time,
+                           input.azimuth_bases.time, cosine, sine, daughter_energy,
+                           daughter_momentum, &result.first.time, &result.second.time);
+    split_component_batch4(input.parent_unit_velocities.radial, input.radial_bases.radial,
+                           input.azimuth_bases.radial, cosine, sine, daughter_energy,
+                           daughter_momentum, &result.first.radial, &result.second.radial);
+    split_component_batch4(input.parent_unit_velocities.azimuth,
+                           input.radial_bases.azimuth, input.azimuth_bases.azimuth,
+                           cosine, sine, daughter_energy, daughter_momentum,
+                           &result.first.azimuth, &result.second.azimuth);
+#else
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        const LocalMomentum parent{input.parent_unit_velocities.time[lane],
+                                   input.parent_unit_velocities.radial[lane],
+                                   input.parent_unit_velocities.azimuth[lane]};
+        const LocalMomentum radial_basis{input.radial_bases.time[lane],
+                                         input.radial_bases.radial[lane],
+                                         input.radial_bases.azimuth[lane]};
+        const LocalMomentum azimuth_basis{input.azimuth_bases.time[lane],
+                                          input.azimuth_bases.radial[lane],
+                                          input.azimuth_bases.azimuth[lane]};
+        const LocalMomentum direction = add(
+            scale(radial_basis, std::cos(input.split_angles_rad[lane])),
+            scale(azimuth_basis, std::sin(input.split_angles_rad[lane])));
+        const LocalMomentum first =
+            add(scale(parent, input.daughter_com_energies[lane]),
+                scale(direction, input.daughter_com_momenta[lane]));
+        const LocalMomentum second =
+            subtract(scale(parent, input.daughter_com_energies[lane]),
+                     scale(direction, input.daughter_com_momenta[lane]));
+        result.first.time[lane] = first.time;
+        result.first.radial[lane] = first.radial;
+        result.first.azimuth[lane] = first.azimuth;
+        result.second.time[lane] = second.time;
+        result.second.radial[lane] = second.radial;
+        result.second.azimuth[lane] = second.azimuth;
+    }
+#endif
+    if (!finite_local_batch4(result.first) || !finite_local_batch4(result.second)) {
+        throw std::overflow_error("Penrose fragment split batch overflowed");
+    }
+    return result;
+}
+
+PenroseConservationBatch4Result penrose_conservation_residuals_batch4(
+    const PenroseConservationBatch4Input& input) {
+    if (!finite_local_batch4(input.parent) || !finite_local_batch4(input.first) ||
+        !finite_local_batch4(input.second) ||
+        !finite_batch4(input.fragment_rest_masses) ||
+        !finite_batch4(input.incoming_constants.energies) ||
+        !finite_batch4(input.incoming_constants.angular_momenta) ||
+        !finite_batch4(input.first_constants.energies) ||
+        !finite_batch4(input.first_constants.angular_momenta) ||
+        !finite_batch4(input.second_constants.energies) ||
+        !finite_batch4(input.second_constants.angular_momenta)) {
+        throw std::invalid_argument("Penrose conservation batch inputs must be finite");
+    }
+    if (std::any_of(input.fragment_rest_masses.begin(), input.fragment_rest_masses.end(),
+                    [](const double mass) { return mass < 0.0; })) {
+        throw std::invalid_argument("Penrose fragment rest masses must be non-negative");
+    }
+
+    PenroseConservationBatch4Result result;
+#if defined(BH_ENABLE_AVX2)
+    const __m256d first_time = load4(input.first.time);
+    const __m256d first_radial = load4(input.first.radial);
+    const __m256d first_azimuth = load4(input.first.azimuth);
+    const __m256d second_time = load4(input.second.time);
+    const __m256d second_radial = load4(input.second.radial);
+    const __m256d second_azimuth = load4(input.second.azimuth);
+    const __m256d time_residual = abs4(_mm256_sub_pd(
+        _mm256_add_pd(first_time, second_time), load4(input.parent.time)));
+    const __m256d radial_residual = abs4(_mm256_sub_pd(
+        _mm256_add_pd(first_radial, second_radial), load4(input.parent.radial)));
+    const __m256d azimuth_residual = abs4(_mm256_sub_pd(
+        _mm256_add_pd(first_azimuth, second_azimuth), load4(input.parent.azimuth)));
+    store4(&result.four_momentum_residuals,
+           _mm256_max_pd(time_residual,
+                         _mm256_max_pd(radial_residual, azimuth_residual)));
+
+    const __m256d rest_mass = load4(input.fragment_rest_masses);
+    const __m256d rest_mass_squared = _mm256_mul_pd(rest_mass, rest_mass);
+    const __m256d first_norm = _mm256_add_pd(
+        _mm256_sub_pd(_mm256_add_pd(_mm256_mul_pd(first_radial, first_radial),
+                                    _mm256_mul_pd(first_azimuth, first_azimuth)),
+                      _mm256_mul_pd(first_time, first_time)),
+        rest_mass_squared);
+    const __m256d second_norm = _mm256_add_pd(
+        _mm256_sub_pd(_mm256_add_pd(_mm256_mul_pd(second_radial, second_radial),
+                                    _mm256_mul_pd(second_azimuth, second_azimuth)),
+                      _mm256_mul_pd(second_time, second_time)),
+        rest_mass_squared);
+    store4(&result.mass_shell_residuals,
+           _mm256_max_pd(abs4(first_norm), abs4(second_norm)));
+    store4(&result.energy_residuals,
+           abs4(_mm256_sub_pd(
+               _mm256_add_pd(load4(input.first_constants.energies),
+                             load4(input.second_constants.energies)),
+               load4(input.incoming_constants.energies))));
+    store4(&result.angular_momentum_residuals,
+           abs4(_mm256_sub_pd(
+               _mm256_add_pd(load4(input.first_constants.angular_momenta),
+                             load4(input.second_constants.angular_momenta)),
+               load4(input.incoming_constants.angular_momenta))));
+#else
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        const LocalMomentum parent{input.parent.time[lane], input.parent.radial[lane],
+                                   input.parent.azimuth[lane]};
+        const LocalMomentum first{input.first.time[lane], input.first.radial[lane],
+                                  input.first.azimuth[lane]};
+        const LocalMomentum second{input.second.time[lane], input.second.radial[lane],
+                                   input.second.azimuth[lane]};
+        result.four_momentum_residuals[lane] =
+            max_component_abs(subtract(add(first, second), parent));
+        const double mass_squared = input.fragment_rest_masses[lane] *
+                                    input.fragment_rest_masses[lane];
+        result.mass_shell_residuals[lane] =
+            std::max(std::abs(minkowski_dot(first, first) + mass_squared),
+                     std::abs(minkowski_dot(second, second) + mass_squared));
+        result.energy_residuals[lane] = std::abs(
+            input.first_constants.energies[lane] +
+            input.second_constants.energies[lane] -
+            input.incoming_constants.energies[lane]);
+        result.angular_momentum_residuals[lane] = std::abs(
+            input.first_constants.angular_momenta[lane] +
+            input.second_constants.angular_momenta[lane] -
+            input.incoming_constants.angular_momenta[lane]);
+    }
+#endif
+    if (!finite_batch4(result.four_momentum_residuals) ||
+        !finite_batch4(result.mass_shell_residuals) ||
+        !finite_batch4(result.energy_residuals) ||
+        !finite_batch4(result.angular_momentum_residuals)) {
+        throw std::overflow_error("Penrose conservation residual batch overflowed");
     }
     return result;
 }

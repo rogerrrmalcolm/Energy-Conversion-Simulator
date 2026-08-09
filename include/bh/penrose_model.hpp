@@ -63,13 +63,61 @@ struct PenroseEventResult {
 };
 
 struct PenroseEnergyBatch4Input {
-    std::array<double, avx2_double_lanes> input_energies{};
-    std::array<double, avx2_double_lanes> escaping_energies{};
+    DoubleBatch4 input_energies{};
+    DoubleBatch4 escaping_energies{};
 };
 
 struct PenroseEnergyBatch4Result {
-    std::array<double, avx2_double_lanes> eta_penrose{};
-    std::array<double, avx2_double_lanes> extracted_energies{};
+    DoubleBatch4 eta_penrose{};
+    DoubleBatch4 extracted_energies{};
+};
+
+struct PenroseLocalMomentumBatch4 {
+    DoubleBatch4 time{};
+    DoubleBatch4 radial{};
+    DoubleBatch4 azimuth{};
+};
+
+struct PenroseZamoGeometryBatch4 {
+    DoubleBatch4 black_hole_masses{};
+    DoubleBatch4 spin_lengths{};
+    DoubleBatch4 radii{};
+};
+
+struct PenroseFragmentSplitBatch4Input {
+    PenroseLocalMomentumBatch4 parent_unit_velocities{};
+    PenroseLocalMomentumBatch4 radial_bases{};
+    PenroseLocalMomentumBatch4 azimuth_bases{};
+    DoubleBatch4 split_angles_rad{};
+    DoubleBatch4 daughter_com_energies{};
+    DoubleBatch4 daughter_com_momenta{};
+};
+
+struct PenroseFragmentSplitBatch4Result {
+    PenroseLocalMomentumBatch4 first{};
+    PenroseLocalMomentumBatch4 second{};
+};
+
+struct PenroseConservedConstantsBatch4 {
+    DoubleBatch4 energies{};
+    DoubleBatch4 angular_momenta{};
+};
+
+struct PenroseConservationBatch4Input {
+    PenroseLocalMomentumBatch4 parent{};
+    PenroseLocalMomentumBatch4 first{};
+    PenroseLocalMomentumBatch4 second{};
+    DoubleBatch4 fragment_rest_masses{};
+    PenroseConservedConstantsBatch4 incoming_constants{};
+    PenroseConservedConstantsBatch4 first_constants{};
+    PenroseConservedConstantsBatch4 second_constants{};
+};
+
+struct PenroseConservationBatch4Result {
+    DoubleBatch4 four_momentum_residuals{};
+    DoubleBatch4 mass_shell_residuals{};
+    DoubleBatch4 energy_residuals{};
+    DoubleBatch4 angular_momentum_residuals{};
 };
 
 [[nodiscard]] constexpr double classical_penrose_efficiency_limit() {
@@ -80,6 +128,16 @@ struct PenroseEnergyBatch4Result {
 // Computes only the four-lane energy ledger; geodesics still establish event validity.
 [[nodiscard]] PenroseEnergyBatch4Result penrose_energy_extraction_batch4(
     const PenroseEnergyBatch4Input& input);
+[[nodiscard]] PenroseLocalMomentumBatch4 coordinate_to_zamo_batch4(
+    const PenroseZamoGeometryBatch4& geometry,
+    const KerrFourMomentumBatch4& coordinate_momenta);
+[[nodiscard]] KerrFourMomentumBatch4 zamo_to_coordinate_batch4(
+    const PenroseZamoGeometryBatch4& geometry,
+    const PenroseLocalMomentumBatch4& local_momenta);
+[[nodiscard]] PenroseFragmentSplitBatch4Result split_penrose_fragments_batch4(
+    const PenroseFragmentSplitBatch4Input& input);
+[[nodiscard]] PenroseConservationBatch4Result penrose_conservation_residuals_batch4(
+    const PenroseConservationBatch4Input& input);
 [[nodiscard]] PenroseEventResult evaluate_equatorial_penrose_event(
     const EquatorialPenroseScenario& scenario, const PenroseSplitParameters& split);
 }

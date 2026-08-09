@@ -221,6 +221,113 @@ int main() {
                       1.0e-14,
                       "four-lane Kerr radial potential matches the scalar kernel");
     }
+
+    bh::KerrFourMomentumBatch4Input momentum_batch;
+    momentum_batch.states.black_hole_masses = {1.0, 1.0, 1.0, 1.0};
+    momentum_batch.states.spin_lengths = {0.5, 0.5, 0.5, 0.5};
+    momentum_batch.states.energies = {1.0, 1.0, 1.0, 1.0};
+    momentum_batch.states.angular_momenta = {0.0, 0.1, -0.1, 0.2};
+    momentum_batch.states.rest_masses = {1.0, 1.0, 1.0, 1.0};
+    momentum_batch.states.carter_constants = {0.0, 0.0, 0.0, 0.0};
+    momentum_batch.states.radii = {10.0, 11.0, 12.0, 13.0};
+    momentum_batch.radial_directions = {1, -1, 1, -1};
+    const auto momentum_batch_result =
+        bh::kerr_equatorial_four_momentum_batch4(momentum_batch);
+    for (std::size_t lane = 0; lane < bh::avx2_double_lanes; ++lane) {
+        const bh::KerrOrbit lane_orbit{
+            momentum_batch.states.black_hole_masses[lane],
+            momentum_batch.states.spin_lengths[lane], momentum_batch.states.energies[lane],
+            momentum_batch.states.angular_momenta[lane],
+            momentum_batch.states.rest_masses[lane], momentum_batch.radial_directions[lane],
+            momentum_batch.states.carter_constants[lane]};
+        const auto scalar_momentum = bh::kerr_equatorial_four_momentum(
+            lane_orbit, momentum_batch.states.radii[lane]);
+        near_relative(momentum_batch_result.coordinate_time[lane],
+                      scalar_momentum.coordinate_time, 1.0e-14,
+                      "four-lane Kerr coordinate time matches the scalar kernel");
+        near_relative(momentum_batch_result.radial[lane], scalar_momentum.radial,
+                      1.0e-14,
+                      "four-lane Kerr radial momentum matches the scalar kernel");
+        near_relative(momentum_batch_result.azimuth[lane], scalar_momentum.azimuth,
+                      1.0e-14,
+                      "four-lane Kerr azimuth momentum matches the scalar kernel");
+    }
+
+    const bh::PenroseZamoGeometryBatch4 zamo_geometry{
+        momentum_batch.states.black_hole_masses, momentum_batch.states.spin_lengths,
+        momentum_batch.states.radii};
+    const auto local_momentum =
+        bh::coordinate_to_zamo_batch4(zamo_geometry, momentum_batch_result);
+    const auto coordinate_round_trip =
+        bh::zamo_to_coordinate_batch4(zamo_geometry, local_momentum);
+    for (std::size_t lane = 0; lane < bh::avx2_double_lanes; ++lane) {
+        near_relative(coordinate_round_trip.coordinate_time[lane],
+                      momentum_batch_result.coordinate_time[lane], 1.0e-13,
+                      "four-lane ZAMO coordinate-time round trip is stable");
+        near_relative(coordinate_round_trip.radial[lane], momentum_batch_result.radial[lane],
+                      1.0e-13, "four-lane ZAMO radial round trip is stable");
+        near_relative(coordinate_round_trip.azimuth[lane],
+                      momentum_batch_result.azimuth[lane], 1.0e-13,
+                      "four-lane ZAMO azimuth round trip is stable");
+    }
+
+    bh::PenroseFragmentSplitBatch4Input split_batch;
+    split_batch.parent_unit_velocities.time = {1.0, 1.0, 1.0, 1.0};
+    split_batch.radial_bases.radial = {1.0, 1.0, 1.0, 1.0};
+    split_batch.azimuth_bases.azimuth = {1.0, 1.0, 1.0, 1.0};
+    split_batch.split_angles_rad = {0.0, 0.5 * std::acos(-1.0), std::acos(-1.0),
+                                    -0.5 * std::acos(-1.0)};
+    split_batch.daughter_com_energies = {1.0, 1.0, 1.0, 1.0};
+    split_batch.daughter_com_momenta = {0.6, 0.6, 0.6, 0.6};
+    const auto split_batch_result = bh::split_penrose_fragments_batch4(split_batch);
+    for (std::size_t lane = 0; lane < bh::avx2_double_lanes; ++lane) {
+        near_relative(split_batch_result.first.time[lane], 1.0, 1.0e-14,
+                      "four-lane split gives the first daughter its center energy");
+        near_relative(split_batch_result.first.radial[lane],
+                      0.6 * std::cos(split_batch.split_angles_rad[lane]), 1.0e-14,
+                      "four-lane split radial component matches scalar arithmetic");
+        near_relative(split_batch_result.first.azimuth[lane],
+                      0.6 * std::sin(split_batch.split_angles_rad[lane]), 1.0e-14,
+                      "four-lane split azimuth component matches scalar arithmetic");
+        near_relative(split_batch_result.second.radial[lane],
+                      -split_batch_result.first.radial[lane], 1.0e-14,
+                      "four-lane split produces opposite daughter radial momenta");
+        near_relative(split_batch_result.second.azimuth[lane],
+                      -split_batch_result.first.azimuth[lane], 1.0e-14,
+                      "four-lane split produces opposite daughter azimuth momenta");
+    }
+
+    bh::PenroseConservationBatch4Input conservation_batch;
+    conservation_batch.parent.time = {2.0, 2.0, 2.0, 2.0};
+    conservation_batch.first = split_batch_result.first;
+    conservation_batch.second = split_batch_result.second;
+    conservation_batch.fragment_rest_masses = {0.8, 0.8, 0.8, 0.8};
+    conservation_batch.incoming_constants.energies = {2.0, 2.0, 2.0, 2.0};
+    conservation_batch.first_constants.energies = {1.0, 1.1, 1.2, 1.3};
+    conservation_batch.second_constants.energies = {1.0, 0.9, 0.7, 0.7};
+    conservation_batch.incoming_constants.angular_momenta = {0.0, 0.0, 0.0, 0.0};
+    conservation_batch.first_constants.angular_momenta = {0.2, 0.3, 0.4, 0.5};
+    conservation_batch.second_constants.angular_momenta = {-0.2, -0.4, -0.4, -0.3};
+    const auto conservation =
+        bh::penrose_conservation_residuals_batch4(conservation_batch);
+    for (std::size_t lane = 0; lane < bh::avx2_double_lanes; ++lane) {
+        near(conservation.four_momentum_residuals[lane], 0.0, 1.0e-14,
+             "four-lane split conserves local four-momentum");
+        near(conservation.mass_shell_residuals[lane], 0.0, 1.0e-14,
+             "four-lane split preserves the daughter mass shell");
+        near_relative(
+            conservation.energy_residuals[lane],
+            std::abs(conservation_batch.first_constants.energies[lane] +
+                     conservation_batch.second_constants.energies[lane] -
+                     conservation_batch.incoming_constants.energies[lane]),
+            1.0e-14, "four-lane energy residual matches scalar arithmetic");
+        near_relative(
+            conservation.angular_momentum_residuals[lane],
+            std::abs(conservation_batch.first_constants.angular_momenta[lane] +
+                     conservation_batch.second_constants.angular_momenta[lane] -
+                     conservation_batch.incoming_constants.angular_momenta[lane]),
+            1.0e-14, "four-lane angular-momentum residual matches scalar arithmetic");
+    }
     const auto escaping = bh::integrate_kerr(outward, 10.0, 0.01, 10'000, 11.0);
     check(escaping.termination == bh::TrajectoryTermination::reached_escape_radius,
           "outward Kerr trajectory reaches escape radius");

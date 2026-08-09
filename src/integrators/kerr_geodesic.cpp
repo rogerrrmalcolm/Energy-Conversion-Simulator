@@ -606,7 +606,7 @@ double kerr_radial_potential(const KerrOrbit& orbit, const double radius) {
         "Kerr radial potential overflowed");
 }
 
-std::array<double, avx2_double_lanes> kerr_radial_potential_batch4(
+DoubleBatch4 kerr_radial_potential_batch4(
     const KerrRadialPotentialBatch4& batch) {
 #if defined(BH_ENABLE_AVX2)
     for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
@@ -658,6 +658,93 @@ std::array<double, avx2_double_lanes> kerr_radial_potential_batch4(
                               batch.energies[lane], batch.angular_momenta[lane],
                               batch.rest_masses[lane], 1, batch.carter_constants[lane]};
         result[lane] = kerr_radial_potential(orbit, batch.radii[lane]);
+    }
+    return result;
+#endif
+}
+
+KerrFourMomentumBatch4 kerr_equatorial_four_momentum_batch4(
+    const KerrFourMomentumBatch4Input& batch) {
+#if defined(BH_ENABLE_AVX2)
+    const DoubleBatch4 potentials = kerr_radial_potential_batch4(batch.states);
+    DoubleBatch4 directions{};
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (batch.radial_directions[lane] != -1 && batch.radial_directions[lane] != 1) {
+            throw std::invalid_argument("Kerr radial direction must be -1 or +1");
+        }
+        const double horizon = kerr_outer_horizon(batch.states.black_hole_masses[lane],
+                                                   batch.states.spin_lengths[lane]);
+        if (batch.states.radii[lane] <= horizon) {
+            throw std::invalid_argument(
+                "equatorial Kerr momentum requires radius outside horizon");
+        }
+        if (potentials[lane] < -potential_tolerance) {
+            throw std::invalid_argument("Kerr radial potential is forbidden at this radius");
+        }
+        directions[lane] = static_cast<double>(batch.radial_directions[lane]);
+    }
+
+    const __m256d spin = _mm256_loadu_pd(batch.states.spin_lengths.data());
+    const __m256d energy = _mm256_loadu_pd(batch.states.energies.data());
+    const __m256d angular_momentum =
+        _mm256_loadu_pd(batch.states.angular_momenta.data());
+    const __m256d radius = _mm256_loadu_pd(batch.states.radii.data());
+    const __m256d radius_squared = _mm256_mul_pd(radius, radius);
+    const __m256d spin_squared = _mm256_mul_pd(spin, spin);
+    const __m256d mass = _mm256_loadu_pd(batch.states.black_hole_masses.data());
+    const __m256d delta = _mm256_add_pd(
+        _mm256_sub_pd(radius_squared,
+                      _mm256_mul_pd(_mm256_set1_pd(2.0), _mm256_mul_pd(mass, radius))),
+        spin_squared);
+    const __m256d p = _mm256_sub_pd(
+        _mm256_mul_pd(energy, _mm256_add_pd(radius_squared, spin_squared)),
+        _mm256_mul_pd(spin, angular_momentum));
+    const __m256d offset =
+        _mm256_sub_pd(angular_momentum, _mm256_mul_pd(spin, energy));
+    const __m256d potential = _mm256_loadu_pd(potentials.data());
+    const __m256d direction = _mm256_loadu_pd(directions.data());
+
+    KerrFourMomentumBatch4 result;
+    const __m256d coordinate_time = _mm256_div_pd(
+        _mm256_add_pd(_mm256_mul_pd(spin, offset),
+                      _mm256_div_pd(
+                          _mm256_mul_pd(_mm256_add_pd(radius_squared, spin_squared), p),
+                          delta)),
+        radius_squared);
+    const __m256d radial = _mm256_div_pd(
+        _mm256_mul_pd(direction,
+                      _mm256_sqrt_pd(_mm256_max_pd(potential, _mm256_setzero_pd()))),
+        radius_squared);
+    const __m256d azimuth = _mm256_div_pd(
+        _mm256_add_pd(offset, _mm256_div_pd(_mm256_mul_pd(spin, p), delta)),
+        radius_squared);
+    _mm256_storeu_pd(result.coordinate_time.data(), coordinate_time);
+    _mm256_storeu_pd(result.radial.data(), radial);
+    _mm256_storeu_pd(result.azimuth.data(), azimuth);
+
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (!std::isfinite(result.coordinate_time[lane]) ||
+            !std::isfinite(result.radial[lane]) || !std::isfinite(result.azimuth[lane])) {
+            throw std::overflow_error("Kerr four-momentum batch overflowed");
+        }
+        if (result.coordinate_time[lane] <= 0.0) {
+            throw std::invalid_argument("equatorial Kerr momentum must be future-directed");
+        }
+    }
+    return result;
+#else
+    KerrFourMomentumBatch4 result;
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        const KerrOrbit orbit{batch.states.black_hole_masses[lane],
+                              batch.states.spin_lengths[lane], batch.states.energies[lane],
+                              batch.states.angular_momenta[lane], batch.states.rest_masses[lane],
+                              batch.radial_directions[lane],
+                              batch.states.carter_constants[lane]};
+        const KerrFourMomentum momentum =
+            kerr_equatorial_four_momentum(orbit, batch.states.radii[lane]);
+        result.coordinate_time[lane] = momentum.coordinate_time;
+        result.radial[lane] = momentum.radial;
+        result.azimuth[lane] = momentum.azimuth;
     }
     return result;
 #endif

@@ -34,16 +34,28 @@ struct KerrIntegrationControl {
 };
 
 inline constexpr std::size_t avx2_double_lanes = 4;
+using DoubleBatch4 = std::array<double, avx2_double_lanes>;
 
 // Structure-of-arrays input for one AVX2 register of radial-potential states.
 struct KerrRadialPotentialBatch4 {
-    std::array<double, avx2_double_lanes> black_hole_masses{};
-    std::array<double, avx2_double_lanes> spin_lengths{};
-    std::array<double, avx2_double_lanes> energies{};
-    std::array<double, avx2_double_lanes> angular_momenta{};
-    std::array<double, avx2_double_lanes> rest_masses{};
-    std::array<double, avx2_double_lanes> carter_constants{};
-    std::array<double, avx2_double_lanes> radii{};
+    DoubleBatch4 black_hole_masses{};
+    DoubleBatch4 spin_lengths{};
+    DoubleBatch4 energies{};
+    DoubleBatch4 angular_momenta{};
+    DoubleBatch4 rest_masses{};
+    DoubleBatch4 carter_constants{};
+    DoubleBatch4 radii{};
+};
+
+struct KerrFourMomentumBatch4 {
+    DoubleBatch4 coordinate_time{};
+    DoubleBatch4 radial{};
+    DoubleBatch4 azimuth{};
+};
+
+struct KerrFourMomentumBatch4Input {
+    KerrRadialPotentialBatch4 states{};
+    std::array<int, avx2_double_lanes> radial_directions{};
 };
 
 [[nodiscard]] double kerr_spin_length(double mass, double dimensionless_spin);
@@ -56,8 +68,10 @@ struct KerrRadialPotentialBatch4 {
 [[nodiscard]] double kerr_delta(double mass, double spin_length, double radius);
 [[nodiscard]] double kerr_equatorial_sigma(double radius);
 [[nodiscard]] double kerr_radial_potential(const KerrOrbit& orbit, double radius);
-[[nodiscard]] std::array<double, avx2_double_lanes> kerr_radial_potential_batch4(
+[[nodiscard]] DoubleBatch4 kerr_radial_potential_batch4(
     const KerrRadialPotentialBatch4& batch);
+[[nodiscard]] KerrFourMomentumBatch4 kerr_equatorial_four_momentum_batch4(
+    const KerrFourMomentumBatch4Input& batch);
 [[nodiscard]] KerrFourMomentum kerr_equatorial_four_momentum(const KerrOrbit& orbit,
                                                                double radius);
 [[nodiscard]] Trajectory integrate_kerr(const KerrOrbit& orbit, double initial_radius,
