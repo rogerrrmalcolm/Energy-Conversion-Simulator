@@ -17,7 +17,7 @@ using DijkstraGridKey = std::array<int, 3>;
 
 // One scalar search window is deliberately bounded until parallel backends are
 // implemented. The limit applies to candidate nodes, not physical trajectories.
-inline constexpr std::size_t max_penrose_search_nodes = 2'700;
+inline constexpr std::size_t max_penrose_search_nodes = 25'000;
 
 struct DijkstraGridResult {
     bool found{};

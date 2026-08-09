@@ -18,6 +18,11 @@
 #include <string_view>
 
 namespace {
+double evaluated_nodes_per_second(const bh::PenroseDijkstraSearchDiagnostics& diagnostics) {
+    const double seconds = std::chrono::duration<double>(diagnostics.elapsed).count();
+    return seconds > 0.0 ? static_cast<double>(diagnostics.nodes_evaluated) / seconds : 0.0;
+}
+
 double parse_double(const std::string_view text, const std::string_view argument_name) {
     double value{};
     const auto [end, error] = std::from_chars(
@@ -145,7 +150,7 @@ void print_usage(const std::string_view program_name) {
                  " It does not search or optimize parameters.\n"
               << "The search-penrose command runs Dijkstra over a declared bounded parameter"
                  " grid and calls the Penrose evaluator for each candidate. CLI search windows"
-                 " are limited to 2700 nodes and cannot use a partial node or time budget.\n"
+                 " are limited to 25000 nodes and cannot use a partial node or time budget.\n"
               << "The map-penrose command exhaustively evaluates the declared bounded grid"
                  " and reports the greatest validated extraction found within that grid.\n"
               << "The toy-plasma command is a reduced, ideal-MHD-inspired transport scaling,"
@@ -283,7 +288,7 @@ void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& inp
               << "  edge costs:               (" << search.edge_costs[0] << ", "
               << search.edge_costs[1] << ", " << search.edge_costs[2] << ")\n"
               << "  maximum evaluations:      " << search.max_evaluations << "\n"
-              << "  scalar window node limit: " << bh::max_penrose_search_nodes << "\n"
+              << "  window node limit:        " << bh::max_penrose_search_nodes << "\n"
               << "  time budget:              " << search.time_budget.count()
               << " ms (0 = disabled)\n\n"
               << "Search diagnostics\n"
@@ -304,7 +309,9 @@ void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& inp
               << "  goal feasible:            " << diagnostics.goal_feasible << "\n"
               << "  elapsed:                  "
               << std::chrono::duration<double, std::milli>(diagnostics.elapsed).count()
-              << " ms\n\n"
+              << " ms\n"
+              << "  throughput:               " << evaluated_nodes_per_second(diagnostics)
+              << " nodes/s\n\n"
               << "Search outcome\n"
               << "  status: " << bh::penrose_dijkstra_search_status_name(result.status) << "\n";
 
@@ -385,10 +392,12 @@ void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& in
               << "  nodes evaluated:          " << diagnostics.nodes_evaluated << "\n"
               << "  retained map entries:     " << result.candidates.size() << "\n"
               << "  maximum evaluations:      " << search.max_evaluations << "\n"
-              << "  scalar window node limit: " << bh::max_penrose_search_nodes << "\n"
+              << "  window node limit:        " << bh::max_penrose_search_nodes << "\n"
               << "  elapsed:                  "
               << std::chrono::duration<double, std::milli>(diagnostics.elapsed).count()
               << " ms\n"
+              << "  throughput:               " << evaluated_nodes_per_second(diagnostics)
+              << " nodes/s\n"
               << "  status: " << bh::penrose_phase_map_status_name(result.status) << "\n";
     if (!result.failure_message.empty()) {
         std::cout << "  detail: " << result.failure_message << "\n";

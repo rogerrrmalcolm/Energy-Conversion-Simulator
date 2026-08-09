@@ -167,7 +167,7 @@ CandidateGrid make_candidate_grid(const PenroseDijkstraSearchConfig& config) {
         throw std::invalid_argument(
             "Penrose search window contains " +
             std::to_string(grid.candidates_in_domain) +
-            " nodes; the scalar limit is " +
+            " nodes; the bounded-window limit is " +
             std::to_string(max_penrose_search_nodes) +
             ". Increase a step size or submit a separate smaller parameter window");
     }

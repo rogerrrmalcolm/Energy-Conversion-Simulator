@@ -482,8 +482,8 @@ int main() {
               loaded_search.search.time_budget.count() == 0 &&
               loaded_search.search.algorithm == bh::PenroseSearchAlgorithm::dijkstra_h_zero,
           "search scenario loader preserves explicit unit-cost Dijkstra controls");
-    check(bh::max_penrose_search_nodes == 2'700,
-          "scalar Penrose search exposes the declared 2700-node limit");
+    check(bh::max_penrose_search_nodes == 25'000,
+          "Penrose search exposes the declared 25000-node limit");
     const bh::PenroseSearchWindowSummary fixture_window =
         bh::describe_penrose_search_window(loaded_search.scenario, loaded_search.search);
     check(fixture_window.dimension_sizes == std::array<std::size_t, 3>{5, 5, 5} &&
@@ -500,33 +500,29 @@ int main() {
         bh::describe_penrose_search_window(
             public_target_search.scenario, public_target_search.search);
     check(public_target_window.dimension_sizes ==
-              std::array<std::size_t, 3>{95, 5, 5} &&
-              public_target_window.candidates == 2'375,
-          "public 15 percent search remains below the 2700-node scalar limit");
+              std::array<std::size_t, 3>{100, 10, 25} &&
+              public_target_window.candidates == 25'000,
+          "public 15 percent search contains exactly 25000 candidate nodes");
     bh::require_complete_penrose_search_window(
         public_target_search.scenario, public_target_search.search);
 
-    auto exact_limit_search = loaded_search.search;
-    exact_limit_search.start = {1.05, 1.90, -2.00};
-    exact_limit_search.lower_bound = exact_limit_search.start;
-    exact_limit_search.upper_bound = {1.19, 2.04, -1.89};
-    exact_limit_search.step = {0.01, 0.01, 0.01};
+    auto exact_limit_search = public_target_search.search;
     exact_limit_search.max_evaluations = bh::max_penrose_search_nodes;
     const bh::PenroseSearchWindowSummary exact_limit_window =
         bh::describe_penrose_search_window(loaded_search.scenario, exact_limit_search);
     check(exact_limit_window.dimension_sizes ==
-              std::array<std::size_t, 3>{15, 15, 12} &&
+              std::array<std::size_t, 3>{100, 10, 25} &&
               exact_limit_window.candidates == bh::max_penrose_search_nodes,
-          "search-window validation accepts exactly 2700 candidate nodes");
+          "search-window validation accepts exactly 25000 candidate nodes");
     bh::require_complete_penrose_search_window(loaded_search.scenario, exact_limit_search);
 
     rejected = false;
     try {
         auto oversized_search = exact_limit_search;
-        oversized_search.upper_bound.split_angle_rad = -1.88;
+        oversized_search.upper_bound.split_angle_rad = -1.87;
         (void)bh::describe_penrose_search_window(loaded_search.scenario, oversized_search);
     } catch (const std::invalid_argument&) { rejected = true; }
-    check(rejected, "Penrose search rejects a candidate window above 2700 nodes");
+    check(rejected, "Penrose search rejects a candidate window above 25000 nodes");
 
     rejected = false;
     try {
