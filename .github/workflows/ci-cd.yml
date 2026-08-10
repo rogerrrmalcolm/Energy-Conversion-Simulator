@@ -107,7 +107,6 @@ jobs:
           load: true
           push: false
           tags: black-hole-simulator:ci
-          build-args: BH_ENABLE_AVX2=ON
           provenance: false
           cache-from: type=gha,scope=container
           cache-to: type=gha,mode=max,scope=container
@@ -162,7 +161,6 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          build-args: BH_ENABLE_AVX2=ON
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha,scope=container
@@ -176,7 +174,11 @@ jobs:
         run: |
           tag="$(printf '%s\n' "$IMAGE_TAGS" | head -n 1)"
           image="${tag%:*}"
-          docker run --rm "$image@$IMAGE_DIGEST" --help
+          docker run --rm "$image@$IMAGE_DIGEST" \
+            --map-penrose \
+            /opt/black-hole/share/black_hole_energy_simulation/scenarios/equatorial_penrose_avx2_smoke.cfg \
+            | tee /tmp/published-phase-map.txt
+          grep -Eq 'AVX2 four-lane batches:[[:space:]]+[1-9]' /tmp/published-phase-map.txt
 
   release-windows:
     name: Publish Windows release

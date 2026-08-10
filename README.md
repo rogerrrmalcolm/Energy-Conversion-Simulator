@@ -413,17 +413,21 @@ cmake --build build-avx2
 ```powershell
 docker build -t black-hole-simulator:local .
 docker run --rm black-hole-simulator:local --algebraic 1.98847e31 0.9
-# Authenticate first unless the GHCR package has been made public.
 docker pull ghcr.io/rogerrrmalcolm/energy-conversion-simulator:latest
+docker run --rm ghcr.io/rogerrrmalcolm/energy-conversion-simulator:latest `
+  --map-penrose `
+  /opt/black-hole/share/black_hole_energy_simulation/scenarios/equatorial_penrose_avx2_smoke.cfg
 ```
 
 The GitHub Actions workflow validates the image on pull requests. Pushes to
 `main` publish `latest` and commit tags to GHCR; tags such as `v0.1.0` also
-publish semantic-version tags. The default `linux/amd64` image has AVX2
-enabled and requires an AVX2-capable x86-64 host. A portable local
-image can instead be built with `--build-arg BH_ENABLE_AVX2=OFF`.
+publish semantic-version tags. Every `linux/amd64` image is compiled with AVX2
+and refuses to start when the host does not expose AVX2. CI executes the
+four-lane scenario from both the test image and the published digest and
+requires a nonzero `AVX2 four-lane batches` result. The scalar executable is
+used only as an unpublished correctness oracle in the backend comparison job.
 
-All 13 current tests pass. They cover algebraic limits and uncertainty, radial
+The test suite covers algebraic limits and uncertainty, radial
 potentials, integration events and residuals, Penrose conservation and
 capture/escape, deterministic search behavior, the 25,000-node contract,
 cross-window fallback aggregation, CLI validation, and CMake package use.

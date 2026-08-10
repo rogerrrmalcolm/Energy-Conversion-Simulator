@@ -102,6 +102,13 @@ if(BH_BUILD_TESTS)
     set_tests_properties(cli_penrose_phase_map PROPERTIES
         PASS_REGULAR_EXPRESSION "status: completed")
 
+    if(BH_ENABLE_AVX2)
+        add_test(NAME cli_penrose_avx2_kernel COMMAND black_hole_demo --map-penrose
+            "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/equatorial_penrose_avx2_smoke.cfg")
+        set_tests_properties(cli_penrose_avx2_kernel PROPERTIES
+            PASS_REGULAR_EXPRESSION "AVX2 four-lane batches: +[1-9][0-9]*")
+    endif()
+
     add_test(NAME cli_penrose_complete_window_fallback COMMAND black_hole_demo --search-penrose
         "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/equatorial_penrose_dijkstra_smoke.cfg")
     set_tests_properties(cli_penrose_complete_window_fallback PROPERTIES
