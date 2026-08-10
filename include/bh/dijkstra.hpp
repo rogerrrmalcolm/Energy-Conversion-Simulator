@@ -15,7 +15,7 @@
 namespace bh {
 using DijkstraGridKey = std::array<int, 3>;
 
-// One scalar search window is deliberately bounded until parallel backends are
+// One search window is deliberately bounded until parallel backends are
 // implemented. The limit applies to candidate nodes, not physical trajectories.
 inline constexpr std::size_t max_penrose_search_nodes = 25'000;
 
@@ -99,6 +99,10 @@ struct PenroseDijkstraSearchDiagnostics {
     std::size_t candidates_in_domain{};
     std::size_t nodes_generated{};
     std::size_t nodes_evaluated{};
+    std::size_t four_lane_batches{};
+    std::size_t avx2_four_lane_batches{};
+    std::size_t four_lane_nodes{};
+    std::size_t scalar_nodes{};
     std::size_t nodes_expanded{};
     std::size_t duplicate_nodes_skipped{};
     std::size_t outside_search_domain_neighbors{};

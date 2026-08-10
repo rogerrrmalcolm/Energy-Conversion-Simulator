@@ -236,7 +236,7 @@ because its efficiency is high. It must be inside the search domain, pass the
 Penrose evaluator, conserve momentum within tolerance, capture the intended
 fragment, escape the other fragment, and satisfy `eta_penrose >= 0.15`.
 
-One scalar window is limited to 2,700 nodes. CLI runs require enough evaluation
+One bounded window is limited to 25,000 nodes. CLI runs require enough evaluation
 budget for every declared node and disable wall-clock termination. Therefore,
 if no goal is found, the connected grid has been exhausted and the engine can
 return its highest validated below-target fallback. The interactive session
@@ -250,9 +250,9 @@ reports the best validated extraction in that bounded grid. Dijkstra solves the
 minimum-adjustment threshold problem; the phase map answers the different
 question of which tested point has the greatest extraction.
 
-The public `95 x 5 x 5` scenario contains 2,375 nodes. Its current best result
-is 9.065063%, so it returns `best_feasible_below_target` rather than claiming a
-15% goal.
+The public `100 x 10 x 25` scenario contains exactly 25,000 nodes. Its current
+best result is 11.78031%, so it returns `best_feasible_below_target` rather than
+claiming a 15% goal.
 
 ### 6. Reduced Toy-Plasma Model
 
@@ -299,10 +299,14 @@ becomes the Dijkstra graph.
 
 ## Performance Engineering
 
-Correct scalar execution is the performance reference. The current code is
-single-threaded and contains no AVX, SSE, or portable-SIMD kernel, so it makes
-no parallel or SIMD speedup claim. The 2,700-node ceiling keeps present scalar
-runs bounded while later backends are developed.
+Correct scalar execution remains the physics reference. The exhaustive phase
+map now groups four adjacent split angles that share radius and incoming `Lz`,
+prepares their incoming geodesic once, and evaluates their split, ZAMO,
+conservation, reconstructed-momentum, adaptive fragment-integration, and energy
+operations through four-lane kernels. Each integration lane retains independent
+step control and termination state. Non-AVX2 builds execute the same batch
+contract through portable scalar fallbacks; remainder nodes use the full scalar
+event evaluator.
 
 Several implemented choices already support reliable performance work:
 
@@ -318,16 +322,33 @@ Several implemented choices already support reliable performance work:
 - explicit diagnostics separate graph work from physics evaluations and make
   optimization regressions observable.
 
-Graph bookkeeping costs approximately
-`O((V + E) log V)` with the binary heap and ordered maps, but geodesic
-integration dominates runtime. The observed 2,375-node search took about 64
-seconds on one tested scalar x86-64 run; this is a reproducibility observation,
-not a benchmark distribution.
+Graph bookkeeping costs approximately `O((V + E) log V)` with the binary heap
+and ordered maps, but geodesic integration dominates runtime. Controlled
+25,000-node exhaustive phase-map runs produced:
 
-The next performance milestone is to separate preparation of the incoming
-parent state from angle-dependent fragment evaluation. Nodes sharing radius
-and `Lz` currently repeat the incoming integration. Caching that prepared ZAMO
-state would remove substantial duplicate work before introducing parallelism.
+| Release backend | Elapsed | Throughput |
+| --- | ---: | ---: |
+| Historical node-at-a-time scalar | 656.839 s | 38.061 nodes/s |
+| Portable scalar batch4 (`-O3`) | 202.058 s | 123.727 nodes/s |
+| AVX2 batch4 (`-O3 -mavx2`) | 194.732 s | 128.382 nodes/s |
+
+Against the matched portable batch backend, AVX2 delivered a measured 1.0376x
+throughput ratio, 3.76% more nodes per second, and 3.63% lower runtime. The full
+batching plus AVX2 change was 3.373x faster than the historical node-at-a-time
+baseline, but most of that gain comes from shared-parent reuse rather than SIMD.
+The graph dispatched 6,000 four-node batches covering 24,000 nodes and 1,000
+scalar tail nodes; 5,592 batches reached AVX2 arithmetic, while 408 terminated
+during incoming-geodesic preparation. All runs returned identical status counts,
+selected parameters, efficiency, and residuals.
+
+Measurements are single controlled runs on an Intel Core Ultra 7 258V using GCC
+15.2.0, Release `-O3`, one application thread, and the same process priority.
+They are reproducibility observations, not a benchmark distribution.
+
+The next performance milestone is to retain one prepared incoming state across
+an entire angle row instead of one four-node batch, then compact active fragment
+lanes before integration. That will reduce repeated parent work and wasted SIMD
+lanes when neighboring trajectories terminate at different times.
 
 After profiling, independent phase-map tiles can be distributed across a fixed
 `std::jthread` worker pool and merged by canonical key for deterministic output.
@@ -352,9 +373,13 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 .\build\black_hole_demo.exe --interactive
 .\build\black_hole_demo.exe --search-penrose .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
+
+# Separate AVX2-enabled build on a compatible x86-64 CPU
+cmake -S . -B build-avx2 -DCMAKE_BUILD_TYPE=Release -DBH_ENABLE_AVX2=ON
+cmake --build build-avx2
 ```
 
 All 13 current tests pass. They cover algebraic limits and uncertainty, radial
 potentials, integration events and residuals, Penrose conservation and
-capture/escape, deterministic search behavior, the 2,700-node contract,
+capture/escape, deterministic search behavior, the 25,000-node contract,
 cross-window fallback aggregation, CLI validation, and CMake package use.

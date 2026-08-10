@@ -341,6 +341,32 @@ int main() {
     check(captured.termination == bh::TrajectoryTermination::crossed_horizon,
           "inward Kerr trajectory crosses horizon");
 
+    const bh::KerrOrbitBatch4 integration_orbits{{outward, inward, outward, inward}};
+    const bh::DoubleBatch4 integration_initial_radii{{10.0, 3.0, 10.0, 3.0}};
+    const bh::DoubleBatch4 integration_escape_radii{{10.2, 20.0, 10.3, 20.0}};
+    const bh::KerrLaneMaskBatch4 integration_lanes{{true, true, true, true}};
+    const auto integration_batch = bh::integrate_kerr_batch4(
+        integration_orbits, integration_initial_radii, 0.005, 50'000,
+        integration_escape_radii, integration_lanes);
+    for (std::size_t lane = 0; lane < bh::avx2_double_lanes; ++lane) {
+        const auto scalar_trajectory = bh::integrate_kerr(
+            integration_orbits[lane], integration_initial_radii[lane], 0.005,
+            50'000, integration_escape_radii[lane]);
+        check(integration_batch[lane].termination == scalar_trajectory.termination,
+              "four-lane adaptive Kerr integration matches scalar termination");
+        near_relative(integration_batch[lane].points.back().radius,
+                      scalar_trajectory.points.back().radius, 1.0e-11,
+                      "four-lane adaptive Kerr integration matches scalar final radius");
+        near_relative(integration_batch[lane].points.back().affine_parameter,
+                      scalar_trajectory.points.back().affine_parameter, 1.0e-10,
+                      "four-lane adaptive Kerr integration matches scalar affine time");
+        check(integration_batch[lane].diagnostics.maximum_normalized_error <= 1.0 &&
+                  integration_batch[lane]
+                          .diagnostics.maximum_normalized_radial_residual <=
+                      1.0e-7,
+              "four-lane adaptive Kerr integration preserves error and radial bounds");
+    }
+
     const double bound_specific_energy = 0.95;
     const double expected_outer_turning_radius = 2.0 / (1.0 -
                                                         bound_specific_energy *
@@ -398,9 +424,10 @@ int main() {
     } catch (const std::invalid_argument&) { rejected = true; }
     check(rejected, "Kerr integration rejects invalid error-control settings");
 
+    const bh::EquatorialPenroseScenario reference_penrose_scenario{
+        1.0, 0.999, 1.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, {}, 1e-7};
     const auto penrose = bh::evaluate_equatorial_penrose_event(
-        {1.0, 0.999, 1.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, {}, 1e-7},
-        {1.10, 2.07, -2.0});
+        reference_penrose_scenario, {1.10, 2.07, -2.0});
     if (penrose.status != bh::PenroseEventStatus::physically_feasible) {
         std::cerr << "Penrose evaluator status: "
                   << bh::penrose_event_status_name(penrose.status) << '\n';
@@ -433,6 +460,42 @@ int main() {
                     penrose.escaping_trajectory.diagnostics.maximum_normalized_radial_residual}) <=
               1.0e-7,
           "Penrose trajectories preserve their radial first integrals");
+
+    const std::array<bh::PenroseSplitParameters, bh::avx2_double_lanes> angle_batch_splits{{
+        {1.10, 2.07, -2.00},
+        {1.10, 2.07, -1.99},
+        {1.10, 2.07, -1.98},
+        {1.10, 2.07, -1.97}}};
+    const auto angle_batch = bh::evaluate_equatorial_penrose_angle_batch4(
+        reference_penrose_scenario, angle_batch_splits);
+    check(angle_batch.used_avx2 == bh::penrose_batch4_uses_avx2(),
+          "four-lane event evaluator reports whether AVX2 executed");
+    for (std::size_t lane = 0; lane < bh::avx2_double_lanes; ++lane) {
+        const auto scalar_event = bh::evaluate_equatorial_penrose_event(
+            reference_penrose_scenario, angle_batch_splits[lane]);
+        const auto& batch_event = angle_batch.events[lane];
+        check(batch_event.status == scalar_event.status &&
+                  batch_event.incoming_termination ==
+                      scalar_event.incoming_trajectory.termination &&
+                  batch_event.captured_termination ==
+                      scalar_event.captured_trajectory.termination &&
+                  batch_event.escaping_termination ==
+                      scalar_event.escaping_trajectory.termination,
+              "four-lane event status and trajectory outcomes match scalar evaluation");
+        near_relative(batch_event.input_energy, scalar_event.input_energy, 1.0e-12,
+                      "four-lane input energy matches scalar evaluation");
+        near_relative(batch_event.captured_energy, scalar_event.captured_energy, 1.0e-12,
+                      "four-lane captured energy matches scalar evaluation");
+        near_relative(batch_event.escaping_energy, scalar_event.escaping_energy, 1.0e-12,
+                      "four-lane escaping energy matches scalar evaluation");
+        near_relative(batch_event.eta_penrose, scalar_event.eta_penrose, 1.0e-12,
+                      "four-lane Penrose efficiency matches scalar evaluation");
+        near_relative(batch_event.extracted_energy, scalar_event.extracted_energy, 1.0e-12,
+                      "four-lane extracted energy matches scalar evaluation");
+        near_relative(batch_event.maximum_normalized_residual,
+                      scalar_event.maximum_normalized_residual, 1.0e-12,
+                      "four-lane maximum residual matches scalar evaluation");
+    }
     const auto scaled_penrose = bh::evaluate_equatorial_penrose_event(
         {2.0, 0.999, 2.0, 0.0, 1.0, 10.0, 20.0, 0.002, 50'000, {}, 1e-7},
         {1.10, 2.07, -2.0});
@@ -727,6 +790,29 @@ int main() {
                   small_phase_map.best_validated_candidate->key &&
               fallback.selected_event.eta_penrose == small_phase_map.best_event.eta_penrose,
           "completed Dijkstra fallback agrees with the exhaustive bounded phase map");
+
+    auto four_angle_phase_map_search = coarse_radius_search;
+    four_angle_phase_map_search.lower_bound = {1.10, 2.07, -2.00};
+    four_angle_phase_map_search.upper_bound = {1.10, 2.07, -1.97};
+    four_angle_phase_map_search.step = {0.01, 0.01, 0.01};
+    four_angle_phase_map_search.start = four_angle_phase_map_search.lower_bound;
+    four_angle_phase_map_search.max_evaluations = 4;
+    const auto four_angle_phase_map = bh::evaluate_penrose_phase_map(
+        loaded_search.scenario, four_angle_phase_map_search);
+    check(four_angle_phase_map.complete &&
+              four_angle_phase_map.candidates.size() == 4 &&
+              four_angle_phase_map.diagnostics.nodes_evaluated == 4 &&
+              four_angle_phase_map.diagnostics.four_lane_batches == 1 &&
+              four_angle_phase_map.diagnostics.four_lane_nodes == 4 &&
+              four_angle_phase_map.diagnostics.scalar_nodes == 0 &&
+              four_angle_phase_map.diagnostics.avx2_four_lane_batches ==
+                  (bh::penrose_batch4_uses_avx2() ? 1U : 0U),
+          "phase map dispatches four adjacent angle states through one batch");
+    for (std::size_t lane = 0; lane < bh::avx2_double_lanes; ++lane) {
+        check(four_angle_phase_map.candidates[lane].key ==
+                  bh::DijkstraGridKey{0, 0, static_cast<int>(lane)},
+              "four-lane phase map preserves deterministic angle-key order");
+    }
     auto limited_phase_map_search = coarse_radius_search;
     limited_phase_map_search.max_evaluations = 1;
     const auto limited_phase_map =

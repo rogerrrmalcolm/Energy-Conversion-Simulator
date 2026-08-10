@@ -370,12 +370,18 @@ void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& inp
 }
 
 void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& input,
-                                    const bh::PenrosePhaseMapResult& result) {
+                                     const bh::PenrosePhaseMapResult& result) {
     const bh::PenroseDijkstraSearchConfig& search = input.search;
     const bh::PenroseDijkstraSearchDiagnostics& diagnostics = result.diagnostics;
+    const std::string_view execution_backend =
+        diagnostics.avx2_four_lane_batches > 0
+            ? "avx2-four-lane-single-thread"
+            : diagnostics.four_lane_batches > 0
+                  ? "portable-scalar-batch4-single-thread"
+                  : "scalar-single-thread";
     std::cout << "Bounded Penrose phase-space map\n"
-              << "  model: scalar exhaustive evaluation of the declared parameter grid\n"
-              << "  execution backend: scalar-single-thread\n"
+              << "  model: four-lane exhaustive evaluation of the declared parameter grid\n"
+              << "  execution backend: " << execution_backend << "\n"
               << "  lower bounds:             ("
               << search.lower_bound.split_radius_over_m << ", "
               << search.lower_bound.incoming_lz_over_m_m << ", "
@@ -390,6 +396,10 @@ void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& in
               << search.step.split_angle_rad << ")\n"
               << "  candidates in domain:     " << diagnostics.candidates_in_domain << "\n"
               << "  nodes evaluated:          " << diagnostics.nodes_evaluated << "\n"
+              << "  four-lane batches:        " << diagnostics.four_lane_batches << "\n"
+              << "  AVX2 four-lane batches:   " << diagnostics.avx2_four_lane_batches << "\n"
+              << "  four-lane nodes:          " << diagnostics.four_lane_nodes << "\n"
+              << "  scalar tail nodes:        " << diagnostics.scalar_nodes << "\n"
               << "  retained map entries:     " << result.candidates.size() << "\n"
               << "  maximum evaluations:      " << search.max_evaluations << "\n"
               << "  window node limit:        " << bh::max_penrose_search_nodes << "\n"

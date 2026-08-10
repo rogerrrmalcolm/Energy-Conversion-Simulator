@@ -281,6 +281,31 @@ PenroseEventStatus failed_integration_status(const Trajectory& trajectory) {
                ? PenroseEventStatus::integration_failed
                : PenroseEventStatus::captured_or_non_escaping;
 }
+
+PenroseEventSummary summarize_event(const PenroseEventResult& event) {
+    return {event.status,
+            event.split,
+            event.input_energy,
+            event.captured_energy,
+            event.escaping_energy,
+            event.eta_penrose,
+            event.extracted_energy,
+            event.maximum_normalized_residual,
+            event.incoming_trajectory.termination,
+            event.captured_trajectory.termination,
+            event.escaping_trajectory.termination};
+}
+
+PenroseEventBatch4Result evaluate_scalar_angle_batch4(
+    const EquatorialPenroseScenario& scenario,
+    const std::array<PenroseSplitParameters, avx2_double_lanes>& splits) {
+    PenroseEventBatch4Result result;
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        result.events[lane] = summarize_event(
+            evaluate_equatorial_penrose_event(scenario, splits[lane]));
+    }
+    return result;
+}
 }  // namespace
 
 std::string_view penrose_event_status_name(const PenroseEventStatus status) {
@@ -582,6 +607,491 @@ PenroseConservationBatch4Result penrose_conservation_residuals_batch4(
         throw std::overflow_error("Penrose conservation residual batch overflowed");
     }
     return result;
+}
+
+bool penrose_batch4_uses_avx2() noexcept {
+#if defined(BH_ENABLE_AVX2)
+    return true;
+#else
+    return false;
+#endif
+}
+
+PenroseEventBatch4Result evaluate_equatorial_penrose_angle_batch4(
+    const EquatorialPenroseScenario& scenario,
+    const std::array<PenroseSplitParameters, avx2_double_lanes>& splits) {
+    validate_scenario(scenario);
+
+    const PenroseSplitParameters& shared = splits.front();
+    const bool shared_parent = std::all_of(
+        splits.begin(), splits.end(), [&shared](const PenroseSplitParameters& split) {
+            return finite_split_parameters(split) &&
+                   split.split_radius_over_m == shared.split_radius_over_m &&
+                   split.incoming_lz_over_m_m == shared.incoming_lz_over_m_m;
+        });
+    if (!shared_parent) {
+        return evaluate_scalar_angle_batch4(scenario, splits);
+    }
+
+    PenroseEventBatch4Result batch;
+    const double mass = scenario.black_hole_mass;
+    const double spin_length = kerr_spin_length(mass, scenario.dimensionless_spin);
+    const double horizon = kerr_outer_horizon(mass, spin_length);
+    const double static_limit = kerr_static_limit_radius(
+        mass, spin_length, 1.57079632679489661923);
+    const double split_radius = shared.split_radius_over_m * mass;
+    const double input_energy =
+        scenario.incoming_specific_energy * scenario.parent_rest_mass;
+    const double input_angular_momentum =
+        shared.incoming_lz_over_m_m * scenario.parent_rest_mass * mass;
+
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        batch.events[lane].split = splits[lane];
+        batch.events[lane].input_energy = input_energy;
+    }
+    if (!(split_radius > horizon && split_radius < static_limit)) {
+        for (PenroseEventSummary& event : batch.events) {
+            event.status = PenroseEventStatus::outside_ergosphere;
+        }
+        return batch;
+    }
+
+    const double initial_radius = scenario.initial_radius_over_m * mass;
+    const double escape_radius = scenario.escape_radius_over_m * mass;
+    if (initial_radius <= split_radius || escape_radius <= static_limit) {
+        for (PenroseEventSummary& event : batch.events) {
+            event.status = PenroseEventStatus::physics_invalid;
+        }
+        return batch;
+    }
+
+    try {
+        const KerrOrbit incoming{mass, spin_length, input_energy, input_angular_momentum,
+                                 scenario.parent_rest_mass, -1};
+        const Trajectory incoming_trajectory = integrate_kerr_to_radius(
+            incoming, initial_radius, split_radius, scenario.integration_step,
+            scenario.max_integration_steps, scenario.integration_control);
+        for (PenroseEventSummary& event : batch.events) {
+            event.incoming_termination = incoming_trajectory.termination;
+        }
+        if (incoming_trajectory.termination !=
+            TrajectoryTermination::reached_target_radius) {
+            const PenroseEventStatus status =
+                failed_integration_status(incoming_trajectory);
+            for (PenroseEventSummary& event : batch.events) {
+                event.status = status;
+            }
+            return batch;
+        }
+
+        const KerrFourMomentum incoming_coordinate =
+            kerr_equatorial_four_momentum(incoming, split_radius);
+        const LocalMomentum incoming_local = coordinate_to_zamo(
+            mass, spin_length, split_radius, incoming_coordinate);
+        const double incoming_mass_shell =
+            std::abs(minkowski_dot(incoming_local, incoming_local) +
+                     scenario.parent_rest_mass * scenario.parent_rest_mass);
+        const double incoming_normalized_residual = normalized_residual(
+            incoming_mass_shell,
+            scenario.parent_rest_mass * scenario.parent_rest_mass);
+        if (incoming_local.time <= 0.0 ||
+            incoming_normalized_residual > scenario.residual_tolerance) {
+            for (PenroseEventSummary& event : batch.events) {
+                event.status = PenroseEventStatus::physics_invalid;
+                event.maximum_normalized_residual = incoming_normalized_residual;
+            }
+            return batch;
+        }
+
+        const LocalMomentum parent_unit_velocity =
+            scale(incoming_local, 1.0 / scenario.parent_rest_mass);
+        LocalMomentum radial_basis;
+        LocalMomentum azimuth_basis;
+        if (!build_equatorial_split_basis(
+                parent_unit_velocity, &radial_basis, &azimuth_basis)) {
+            for (PenroseEventSummary& event : batch.events) {
+                event.status = PenroseEventStatus::physics_invalid;
+            }
+            return batch;
+        }
+
+        const double daughter_com_energy = scenario.parent_rest_mass / 2.0;
+        const double daughter_com_momentum = std::sqrt(std::max(
+            0.0, daughter_com_energy * daughter_com_energy -
+                     scenario.fragment_rest_mass * scenario.fragment_rest_mass));
+        PenroseFragmentSplitBatch4Input split_input;
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            split_input.parent_unit_velocities.time[lane] = parent_unit_velocity.time;
+            split_input.parent_unit_velocities.radial[lane] = parent_unit_velocity.radial;
+            split_input.parent_unit_velocities.azimuth[lane] = parent_unit_velocity.azimuth;
+            split_input.radial_bases.time[lane] = radial_basis.time;
+            split_input.radial_bases.radial[lane] = radial_basis.radial;
+            split_input.radial_bases.azimuth[lane] = radial_basis.azimuth;
+            split_input.azimuth_bases.time[lane] = azimuth_basis.time;
+            split_input.azimuth_bases.radial[lane] = azimuth_basis.radial;
+            split_input.azimuth_bases.azimuth[lane] = azimuth_basis.azimuth;
+            split_input.split_angles_rad[lane] = splits[lane].split_angle_rad;
+            split_input.daughter_com_energies[lane] = daughter_com_energy;
+            split_input.daughter_com_momenta[lane] = daughter_com_momentum;
+        }
+        const PenroseFragmentSplitBatch4Result local_fragments =
+            split_penrose_fragments_batch4(split_input);
+
+        PenroseZamoGeometryBatch4 geometry;
+        geometry.black_hole_masses.fill(mass);
+        geometry.spin_lengths.fill(spin_length);
+        geometry.radii.fill(split_radius);
+        const KerrFourMomentumBatch4 first_coordinate_batch =
+            zamo_to_coordinate_batch4(geometry, local_fragments.first);
+        const KerrFourMomentumBatch4 second_coordinate_batch =
+            zamo_to_coordinate_batch4(geometry, local_fragments.second);
+
+        std::array<KerrFourMomentum, avx2_double_lanes> first_coordinates{};
+        std::array<KerrFourMomentum, avx2_double_lanes> second_coordinates{};
+        std::array<ConservedConstants, avx2_double_lanes> first_constants{};
+        std::array<ConservedConstants, avx2_double_lanes> second_constants{};
+        PenroseConservationBatch4Input conservation_input;
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            first_coordinates[lane] = {first_coordinate_batch.coordinate_time[lane],
+                                       first_coordinate_batch.radial[lane],
+                                       first_coordinate_batch.azimuth[lane]};
+            second_coordinates[lane] = {second_coordinate_batch.coordinate_time[lane],
+                                        second_coordinate_batch.radial[lane],
+                                        second_coordinate_batch.azimuth[lane]};
+            first_constants[lane] = conserved_constants(
+                mass, spin_length, split_radius, first_coordinates[lane]);
+            second_constants[lane] = conserved_constants(
+                mass, spin_length, split_radius, second_coordinates[lane]);
+            conservation_input.parent.time[lane] = incoming_local.time;
+            conservation_input.parent.radial[lane] = incoming_local.radial;
+            conservation_input.parent.azimuth[lane] = incoming_local.azimuth;
+            conservation_input.first.time[lane] = local_fragments.first.time[lane];
+            conservation_input.first.radial[lane] = local_fragments.first.radial[lane];
+            conservation_input.first.azimuth[lane] = local_fragments.first.azimuth[lane];
+            conservation_input.second.time[lane] = local_fragments.second.time[lane];
+            conservation_input.second.radial[lane] = local_fragments.second.radial[lane];
+            conservation_input.second.azimuth[lane] = local_fragments.second.azimuth[lane];
+            conservation_input.fragment_rest_masses[lane] = scenario.fragment_rest_mass;
+            conservation_input.incoming_constants.energies[lane] = input_energy;
+            conservation_input.incoming_constants.angular_momenta[lane] =
+                input_angular_momentum;
+            conservation_input.first_constants.energies[lane] =
+                first_constants[lane].energy;
+            conservation_input.first_constants.angular_momenta[lane] =
+                first_constants[lane].angular_momentum;
+            conservation_input.second_constants.energies[lane] =
+                second_constants[lane].energy;
+            conservation_input.second_constants.angular_momenta[lane] =
+                second_constants[lane].angular_momentum;
+        }
+        const PenroseConservationBatch4Result conservation =
+            penrose_conservation_residuals_batch4(conservation_input);
+
+        std::array<bool, avx2_double_lanes> lane_valid{};
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            PenroseEventSummary& event = batch.events[lane];
+            event.maximum_normalized_residual = incoming_normalized_residual;
+            event.maximum_normalized_residual = std::max(
+                event.maximum_normalized_residual,
+                normalized_residual(conservation.four_momentum_residuals[lane],
+                                    max_component_abs(incoming_local)));
+            event.maximum_normalized_residual = std::max(
+                event.maximum_normalized_residual,
+                normalized_residual(
+                    conservation.mass_shell_residuals[lane],
+                    scenario.parent_rest_mass * scenario.parent_rest_mass));
+
+            const double coordinate_mass_shell = std::max(
+                coordinate_mass_shell_residual(
+                    mass, spin_length, split_radius, first_coordinates[lane],
+                    scenario.fragment_rest_mass),
+                coordinate_mass_shell_residual(
+                    mass, spin_length, split_radius, second_coordinates[lane],
+                    scenario.fragment_rest_mass));
+            event.maximum_normalized_residual = std::max(
+                event.maximum_normalized_residual,
+                normalized_residual(conservation.energy_residuals[lane], input_energy));
+            event.maximum_normalized_residual = std::max(
+                event.maximum_normalized_residual,
+                normalized_residual(conservation.angular_momentum_residuals[lane],
+                                    input_angular_momentum));
+            event.maximum_normalized_residual = std::max(
+                event.maximum_normalized_residual,
+                normalized_residual(
+                    coordinate_mass_shell,
+                    scenario.fragment_rest_mass * scenario.fragment_rest_mass));
+            lane_valid[lane] = local_fragments.first.time[lane] > 0.0 &&
+                               local_fragments.second.time[lane] > 0.0 &&
+                               event.maximum_normalized_residual <=
+                                   scenario.residual_tolerance;
+            if (!lane_valid[lane]) {
+                event.status = PenroseEventStatus::physics_invalid;
+            }
+        }
+
+        std::array<KerrFourMomentum, avx2_double_lanes> first_reconstructed{};
+        std::array<KerrFourMomentum, avx2_double_lanes> second_reconstructed{};
+        const auto representative = std::find(lane_valid.begin(), lane_valid.end(), true);
+        if (representative != lane_valid.end()) {
+            const std::size_t fallback_lane = static_cast<std::size_t>(
+                std::distance(lane_valid.begin(), representative));
+            KerrFourMomentumBatch4Input first_reconstruction_input;
+            KerrFourMomentumBatch4Input second_reconstruction_input;
+            for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+                const std::size_t source = lane_valid[lane] ? lane : fallback_lane;
+                const auto fill_reconstruction = [&](KerrFourMomentumBatch4Input& input,
+                                                     const ConservedConstants& constants,
+                                                     const KerrFourMomentum& coordinate) {
+                    input.states.black_hole_masses[lane] = mass;
+                    input.states.spin_lengths[lane] = spin_length;
+                    input.states.energies[lane] = constants.energy;
+                    input.states.angular_momenta[lane] = constants.angular_momentum;
+                    input.states.rest_masses[lane] = scenario.fragment_rest_mass;
+                    input.states.carter_constants[lane] = 0.0;
+                    input.states.radii[lane] = split_radius;
+                    input.radial_directions[lane] = coordinate.radial < 0.0 ? -1 : 1;
+                };
+                fill_reconstruction(first_reconstruction_input,
+                                    first_constants[source], first_coordinates[source]);
+                fill_reconstruction(second_reconstruction_input,
+                                    second_constants[source], second_coordinates[source]);
+            }
+            const auto reconstruct_scalar_lanes = [&] {
+                for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+                    if (!lane_valid[lane]) {
+                        continue;
+                    }
+                    try {
+                        first_reconstructed[lane] = kerr_equatorial_four_momentum(
+                            {mass, spin_length, first_constants[lane].energy,
+                             first_constants[lane].angular_momentum,
+                             scenario.fragment_rest_mass,
+                             first_coordinates[lane].radial < 0.0 ? -1 : 1},
+                            split_radius);
+                        second_reconstructed[lane] = kerr_equatorial_four_momentum(
+                            {mass, spin_length, second_constants[lane].energy,
+                             second_constants[lane].angular_momentum,
+                             scenario.fragment_rest_mass,
+                             second_coordinates[lane].radial < 0.0 ? -1 : 1},
+                            split_radius);
+                    } catch (const std::invalid_argument&) {
+                        batch.events[lane].status =
+                            PenroseEventStatus::physics_invalid;
+                        lane_valid[lane] = false;
+                    } catch (const std::overflow_error&) {
+                        batch.events[lane].status =
+                            PenroseEventStatus::physics_invalid;
+                        lane_valid[lane] = false;
+                    }
+                }
+            };
+            try {
+                const KerrFourMomentumBatch4 first_batch =
+                    kerr_equatorial_four_momentum_batch4(first_reconstruction_input);
+                const KerrFourMomentumBatch4 second_batch =
+                    kerr_equatorial_four_momentum_batch4(second_reconstruction_input);
+                for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+                    first_reconstructed[lane] = {
+                        first_batch.coordinate_time[lane], first_batch.radial[lane],
+                        first_batch.azimuth[lane]};
+                    second_reconstructed[lane] = {
+                        second_batch.coordinate_time[lane], second_batch.radial[lane],
+                        second_batch.azimuth[lane]};
+                }
+            } catch (const std::invalid_argument&) {
+                reconstruct_scalar_lanes();
+            } catch (const std::overflow_error&) {
+                reconstruct_scalar_lanes();
+            }
+
+            for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+                if (!lane_valid[lane]) {
+                    continue;
+                }
+                PenroseEventSummary& event = batch.events[lane];
+                const double initialization_residual = std::max(
+                    coordinate_momentum_difference(first_coordinates[lane],
+                                                   first_reconstructed[lane]),
+                    coordinate_momentum_difference(second_coordinates[lane],
+                                                   second_reconstructed[lane]));
+                event.maximum_normalized_residual = std::max(
+                    event.maximum_normalized_residual,
+                    normalized_residual(
+                        initialization_residual,
+                        std::max(max_component_abs(first_coordinates[lane]),
+                                 max_component_abs(second_coordinates[lane]))));
+                if (event.maximum_normalized_residual >
+                    scenario.residual_tolerance) {
+                    event.status = PenroseEventStatus::physics_invalid;
+                    lane_valid[lane] = false;
+                }
+            }
+        }
+
+        std::array<bool, avx2_double_lanes> physically_feasible{};
+        PenroseEnergyBatch4Input energy_input;
+        energy_input.input_energies.fill(input_energy);
+        energy_input.escaping_energies.fill(input_energy);
+        KerrOrbitBatch4 captured_orbits{};
+        KerrOrbitBatch4 escaping_orbits{};
+        KerrLaneMaskBatch4 integration_lanes{};
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            if (!lane_valid[lane]) {
+                continue;
+            }
+
+            struct Fragment {
+                KerrFourMomentum coordinate_momentum;
+                ConservedConstants constants;
+            };
+            const std::array<Fragment, 2> fragments{{
+                {first_coordinates[lane], first_constants[lane]},
+                {second_coordinates[lane], second_constants[lane]}}};
+            PenroseEventSummary& event = batch.events[lane];
+            bool has_capture_escape_pair = false;
+            for (const auto captured_index : {0U, 1U}) {
+                const auto escaping_index = 1U - captured_index;
+                const Fragment& captured = fragments[captured_index];
+                const Fragment& escaping = fragments[escaping_index];
+                if (captured.constants.energy >= -scenario.residual_tolerance ||
+                    escaping.constants.energy <= scenario.residual_tolerance ||
+                    captured.coordinate_momentum.radial >=
+                        -scenario.residual_tolerance ||
+                    escaping.coordinate_momentum.radial <=
+                        scenario.residual_tolerance) {
+                    continue;
+                }
+                has_capture_escape_pair = true;
+                captured_orbits[lane] = {
+                    mass, spin_length, captured.constants.energy,
+                    captured.constants.angular_momentum,
+                    scenario.fragment_rest_mass, -1};
+                escaping_orbits[lane] = {
+                    mass, spin_length, escaping.constants.energy,
+                    escaping.constants.angular_momentum,
+                    scenario.fragment_rest_mass, 1};
+                event.captured_energy = captured.constants.energy;
+                event.escaping_energy = escaping.constants.energy;
+                integration_lanes[lane] = true;
+                break;
+            }
+            if (!has_capture_escape_pair) {
+                event.status = PenroseEventStatus::captured_or_non_escaping;
+            }
+        }
+
+        KerrTrajectoryBatch4 captured_trajectories{};
+        KerrTrajectoryBatch4 escaping_trajectories{};
+        if (std::any_of(integration_lanes.begin(), integration_lanes.end(),
+                        [](const bool active) { return active; })) {
+            DoubleBatch4 initial_radii{};
+            DoubleBatch4 escape_radii{};
+            initial_radii.fill(split_radius);
+            escape_radii.fill(escape_radius);
+            const auto integrate_scalar_lanes = [&] {
+                for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+                    if (!integration_lanes[lane]) {
+                        continue;
+                    }
+                    try {
+                        captured_trajectories[lane] = integrate_kerr(
+                            captured_orbits[lane], split_radius,
+                            scenario.integration_step,
+                            scenario.max_integration_steps, escape_radius,
+                            scenario.integration_control);
+                        escaping_trajectories[lane] = integrate_kerr(
+                            escaping_orbits[lane], split_radius,
+                            scenario.integration_step,
+                            scenario.max_integration_steps, escape_radius,
+                            scenario.integration_control);
+                    } catch (const std::invalid_argument&) {
+                        batch.events[lane].status =
+                            PenroseEventStatus::physics_invalid;
+                        integration_lanes[lane] = false;
+                    } catch (const std::overflow_error&) {
+                        batch.events[lane].status =
+                            PenroseEventStatus::physics_invalid;
+                        integration_lanes[lane] = false;
+                    }
+                }
+            };
+            try {
+                captured_trajectories = integrate_kerr_batch4(
+                    captured_orbits, initial_radii, scenario.integration_step,
+                    scenario.max_integration_steps, escape_radii,
+                    integration_lanes, scenario.integration_control);
+                escaping_trajectories = integrate_kerr_batch4(
+                    escaping_orbits, initial_radii, scenario.integration_step,
+                    scenario.max_integration_steps, escape_radii,
+                    integration_lanes, scenario.integration_control);
+            } catch (const std::invalid_argument&) {
+                integrate_scalar_lanes();
+            } catch (const std::overflow_error&) {
+                integrate_scalar_lanes();
+            }
+        }
+
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            if (!integration_lanes[lane]) {
+                continue;
+            }
+            PenroseEventSummary& event = batch.events[lane];
+            const Trajectory& captured_trajectory = captured_trajectories[lane];
+            const Trajectory& escaping_trajectory = escaping_trajectories[lane];
+            event.captured_termination = captured_trajectory.termination;
+            event.escaping_termination = escaping_trajectory.termination;
+            if (captured_trajectory.termination !=
+                    TrajectoryTermination::crossed_horizon ||
+                escaping_trajectory.termination !=
+                    TrajectoryTermination::reached_escape_radius) {
+                event.status =
+                    captured_trajectory.termination ==
+                                TrajectoryTermination::invalid_state ||
+                            escaping_trajectory.termination ==
+                                TrajectoryTermination::invalid_state
+                        ? PenroseEventStatus::integration_failed
+                        : PenroseEventStatus::captured_or_non_escaping;
+                continue;
+            }
+
+            const double maximum_trajectory_radial_residual = std::max(
+                {incoming_trajectory.diagnostics.maximum_normalized_radial_residual,
+                 captured_trajectory.diagnostics.maximum_normalized_radial_residual,
+                 escaping_trajectory.diagnostics.maximum_normalized_radial_residual});
+            event.maximum_normalized_residual = std::max(
+                event.maximum_normalized_residual,
+                maximum_trajectory_radial_residual);
+            if (!std::isfinite(maximum_trajectory_radial_residual)) {
+                event.status = PenroseEventStatus::integration_failed;
+                continue;
+            }
+            if (event.maximum_normalized_residual >
+                scenario.residual_tolerance) {
+                event.status = PenroseEventStatus::physics_invalid;
+                continue;
+            }
+
+            event.status = PenroseEventStatus::physically_feasible;
+            physically_feasible[lane] = true;
+            energy_input.escaping_energies[lane] = event.escaping_energy;
+        }
+
+        const PenroseEnergyBatch4Result energy =
+            penrose_energy_extraction_batch4(energy_input);
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            if (physically_feasible[lane]) {
+                batch.events[lane].eta_penrose = energy.eta_penrose[lane];
+                batch.events[lane].extracted_energy =
+                    energy.extracted_energies[lane];
+            }
+        }
+        batch.used_avx2 = penrose_batch4_uses_avx2();
+        return batch;
+    } catch (const std::invalid_argument&) {
+        return evaluate_scalar_angle_batch4(scenario, splits);
+    } catch (const std::overflow_error&) {
+        return evaluate_scalar_angle_batch4(scenario, splits);
+    }
 }
 
 PenroseEventResult evaluate_equatorial_penrose_event(

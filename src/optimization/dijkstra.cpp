@@ -233,7 +233,35 @@ PenroseDijkstraNodeStatus classify_node(const PenroseEventResult& event,
     return PenroseDijkstraNodeStatus::physics_invalid;
 }
 
+PenroseDijkstraNodeStatus classify_node(const PenroseEventSummary& event,
+                                        const EquatorialPenroseScenario& scenario,
+                                        const double eta_target) {
+    switch (event.status) {
+    case PenroseEventStatus::outside_ergosphere:
+        return PenroseDijkstraNodeStatus::outside_ergosphere;
+    case PenroseEventStatus::physics_invalid:
+        return PenroseDijkstraNodeStatus::physics_invalid;
+    case PenroseEventStatus::captured_or_non_escaping:
+        return PenroseDijkstraNodeStatus::captured_or_non_escaping;
+    case PenroseEventStatus::integration_failed:
+        return PenroseDijkstraNodeStatus::integration_failed;
+    case PenroseEventStatus::physically_feasible:
+        return event.extracted_energy > 0.0 && event.eta_penrose >= eta_target &&
+                       event.maximum_normalized_residual <= scenario.residual_tolerance
+                   ? PenroseDijkstraNodeStatus::goal_feasible
+                   : PenroseDijkstraNodeStatus::escaping_without_target;
+    }
+    return PenroseDijkstraNodeStatus::physics_invalid;
+}
+
 bool has_validated_positive_extraction(const PenroseEventResult& event,
+                                       const EquatorialPenroseScenario& scenario) {
+    return event.status == PenroseEventStatus::physically_feasible &&
+           event.extracted_energy > 0.0 &&
+           event.maximum_normalized_residual <= scenario.residual_tolerance;
+}
+
+bool has_validated_positive_extraction(const PenroseEventSummary& event,
                                        const EquatorialPenroseScenario& scenario) {
     return event.status == PenroseEventStatus::physically_feasible &&
            event.extracted_energy > 0.0 &&
@@ -253,6 +281,21 @@ CompactCandidateEvaluation compact_evaluation(const PenroseEventResult& event,
             event.maximum_normalized_residual,
             event.captured_trajectory.termination,
             event.escaping_trajectory.termination};
+}
+
+CompactCandidateEvaluation compact_evaluation(const PenroseEventSummary& event,
+                                               const EquatorialPenroseScenario& scenario,
+                                               const double eta_target) {
+    return {classify_node(event, scenario, eta_target),
+            event.status,
+            event.input_energy,
+            event.captured_energy,
+            event.escaping_energy,
+            event.eta_penrose,
+            event.extracted_energy,
+            event.maximum_normalized_residual,
+            event.captured_termination,
+            event.escaping_termination};
 }
 
 PenroseDijkstraNode make_node(const CandidateGrid& grid, const DijkstraGridKey& key,
@@ -613,6 +656,7 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
                 (void)inserted;
                 evaluation = entry;
                 ++result.diagnostics.nodes_evaluated;
+                ++result.diagnostics.scalar_nodes;
                 record_status(result.diagnostics, evaluation->second.status);
                 if (has_validated_positive_extraction(event, scenario) &&
                     evaluation->second.status ==
@@ -736,13 +780,31 @@ PenrosePhaseMapResult evaluate_penrose_phase_map(
     result.candidates.reserve(reserve_size);
 
     std::size_t discovery_order = 0;
+    const auto retain_candidate = [&](const DijkstraGridKey& key, const auto& event) {
+        const CompactCandidateEvaluation evaluation =
+            compact_evaluation(event, scenario, config.eta_target);
+        PenroseDijkstraNode node =
+            make_node(grid, key, evaluation, 0, discovery_order++);
+        ++result.diagnostics.nodes_generated;
+        ++result.diagnostics.nodes_evaluated;
+        record_status(result.diagnostics, node.status);
+        if (has_validated_positive_extraction(event, scenario) &&
+            (!result.best_validated_candidate ||
+             better_extraction(node, *result.best_validated_candidate))) {
+            result.best_validated_candidate = node;
+        }
+        result.candidates.push_back(std::move(node));
+    };
+
+    const std::size_t angle_count =
+        static_cast<std::size_t>(grid.upper[2]) + 1;
     for (std::size_t radius_index = 0;
          radius_index <= static_cast<std::size_t>(grid.upper[0]); ++radius_index) {
         for (std::size_t angular_momentum_index = 0;
              angular_momentum_index <= static_cast<std::size_t>(grid.upper[1]);
              ++angular_momentum_index) {
-            for (std::size_t angle_index = 0;
-                 angle_index <= static_cast<std::size_t>(grid.upper[2]); ++angle_index) {
+            std::size_t angle_index = 0;
+            while (angle_index < angle_count) {
                 if (stop_token.stop_requested()) {
                     result.status = PenrosePhaseMapStatus::cancelled;
                     return with_elapsed(std::move(result), start_time);
@@ -756,31 +818,61 @@ PenrosePhaseMapResult evaluate_penrose_phase_map(
                     return with_elapsed(std::move(result), start_time);
                 }
 
+                const std::size_t remaining_angles = angle_count - angle_index;
+                const std::size_t remaining_budget =
+                    config.max_evaluations - result.diagnostics.nodes_evaluated;
+                if (remaining_angles >= avx2_double_lanes &&
+                    remaining_budget >= avx2_double_lanes) {
+                    std::array<DijkstraGridKey, avx2_double_lanes> keys{};
+                    std::array<PenroseSplitParameters, avx2_double_lanes> splits{};
+                    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+                        keys[lane] = {
+                            static_cast<int>(radius_index),
+                            static_cast<int>(angular_momentum_index),
+                            static_cast<int>(angle_index + lane)};
+                        splits[lane] = split_at(grid, keys[lane]);
+                    }
+
+                    PenroseEventBatch4Result batch;
+                    try {
+                        batch = evaluate_equatorial_penrose_angle_batch4(
+                            scenario, splits);
+                    } catch (const std::exception& error) {
+                        result.status = PenrosePhaseMapStatus::evaluation_failure;
+                        result.failure_message =
+                            "candidate batch evaluator threw: " +
+                            std::string(error.what());
+                        return with_elapsed(std::move(result), start_time);
+                    }
+                    ++result.diagnostics.four_lane_batches;
+                    result.diagnostics.four_lane_nodes += avx2_double_lanes;
+                    if (batch.used_avx2) {
+                        ++result.diagnostics.avx2_four_lane_batches;
+                    }
+                    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+                        retain_candidate(keys[lane], batch.events[lane]);
+                    }
+                    angle_index += avx2_double_lanes;
+                    continue;
+                }
+
                 const DijkstraGridKey key{
                     static_cast<int>(radius_index),
                     static_cast<int>(angular_momentum_index),
                     static_cast<int>(angle_index)};
-                PenroseEventResult event;
                 try {
-                    event = evaluate_equatorial_penrose_event(scenario, split_at(grid, key));
+                    const PenroseEventResult event =
+                        evaluate_equatorial_penrose_event(
+                            scenario, split_at(grid, key));
+                    ++result.diagnostics.scalar_nodes;
+                    retain_candidate(key, event);
                 } catch (const std::exception& error) {
                     result.status = PenrosePhaseMapStatus::evaluation_failure;
-                    result.failure_message = "candidate evaluator threw: " + std::string(error.what());
+                    result.failure_message =
+                        "candidate evaluator threw: " + std::string(error.what());
                     return with_elapsed(std::move(result), start_time);
                 }
-
-                const CompactCandidateEvaluation evaluation =
-                    compact_evaluation(event, scenario, config.eta_target);
-                PenroseDijkstraNode node = make_node(grid, key, evaluation, 0, discovery_order++);
-                ++result.diagnostics.nodes_generated;
-                ++result.diagnostics.nodes_evaluated;
-                record_status(result.diagnostics, node.status);
-                if (has_validated_positive_extraction(event, scenario) &&
-                    (!result.best_validated_candidate ||
-                     better_extraction(node, *result.best_validated_candidate))) {
-                    result.best_validated_candidate = node;
-                }
-                result.candidates.push_back(std::move(node));
+                ++angle_index;
             }
         }
     }

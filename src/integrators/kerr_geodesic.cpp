@@ -243,6 +243,204 @@ StepResult rk4_step(const KerrOrbit& orbit, const TrajectoryPoint& state, const 
     return {EvaluationStatus::valid, next};
 }
 
+struct DerivativeEvaluationBatch4 {
+    std::array<EvaluationStatus, avx2_double_lanes> status{};
+    std::array<Derivative, avx2_double_lanes> value{};
+};
+
+struct StepResultBatch4 {
+    std::array<EvaluationStatus, avx2_double_lanes> status{};
+    std::array<TrajectoryPoint, avx2_double_lanes> next{};
+};
+
+DerivativeEvaluationBatch4 derivative_batch4(
+    const KerrOrbitBatch4& orbits,
+    const std::array<TrajectoryPoint, avx2_double_lanes>& states,
+    const KerrLaneMaskBatch4& active_lanes) {
+    DerivativeEvaluationBatch4 result;
+    result.status.fill(EvaluationStatus::invalid);
+
+    KerrLaneMaskBatch4 candidates{};
+    std::size_t fallback_lane = avx2_double_lanes;
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (!active_lanes[lane]) {
+            continue;
+        }
+        const double horizon = kerr_outer_horizon(
+            orbits[lane].black_hole_mass, orbits[lane].spin_length);
+        const TrajectoryPoint& state = states[lane];
+        candidates[lane] = std::isfinite(state.affine_parameter) &&
+                           std::isfinite(state.radius) && std::isfinite(state.phi) &&
+                           std::isfinite(state.coordinate_time) &&
+                           state.radius > horizon_event_radius(horizon);
+        if (candidates[lane] && fallback_lane == avx2_double_lanes) {
+            fallback_lane = lane;
+        }
+    }
+    if (fallback_lane == avx2_double_lanes) {
+        return result;
+    }
+
+    KerrRadialPotentialBatch4 potential_input;
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        const std::size_t source = candidates[lane] ? lane : fallback_lane;
+        potential_input.black_hole_masses[lane] = orbits[source].black_hole_mass;
+        potential_input.spin_lengths[lane] = orbits[source].spin_length;
+        potential_input.energies[lane] = orbits[source].energy;
+        potential_input.angular_momenta[lane] = orbits[source].angular_momentum;
+        potential_input.rest_masses[lane] = orbits[source].rest_mass;
+        potential_input.carter_constants[lane] = orbits[source].carter_constant;
+        potential_input.radii[lane] = states[source].radius;
+    }
+    const DoubleBatch4 potentials = kerr_radial_potential_batch4(potential_input);
+
+    KerrLaneMaskBatch4 momentum_lanes{};
+    fallback_lane = avx2_double_lanes;
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (!candidates[lane]) {
+            continue;
+        }
+        if (potentials[lane] < -potential_tolerance) {
+            result.status[lane] = EvaluationStatus::forbidden_radial_region;
+        } else if (potentials[lane] <= potential_tolerance) {
+            result.status[lane] = EvaluationStatus::turning_point;
+        } else {
+            momentum_lanes[lane] = true;
+            fallback_lane = fallback_lane == avx2_double_lanes ? lane : fallback_lane;
+        }
+    }
+    if (fallback_lane == avx2_double_lanes) {
+        return result;
+    }
+
+    KerrFourMomentumBatch4Input momentum_input;
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        const std::size_t source = momentum_lanes[lane] ? lane : fallback_lane;
+        momentum_input.states.black_hole_masses[lane] =
+            orbits[source].black_hole_mass;
+        momentum_input.states.spin_lengths[lane] = orbits[source].spin_length;
+        momentum_input.states.energies[lane] = orbits[source].energy;
+        momentum_input.states.angular_momenta[lane] =
+            orbits[source].angular_momentum;
+        momentum_input.states.rest_masses[lane] = orbits[source].rest_mass;
+        momentum_input.states.carter_constants[lane] =
+            orbits[source].carter_constant;
+        momentum_input.states.radii[lane] = states[source].radius;
+        momentum_input.radial_directions[lane] = orbits[source].radial_direction;
+    }
+
+    try {
+        const KerrFourMomentumBatch4 momenta =
+            kerr_equatorial_four_momentum_batch4(momentum_input);
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            if (!momentum_lanes[lane]) {
+                continue;
+            }
+            result.status[lane] = EvaluationStatus::valid;
+            result.value[lane] = {momenta.radial[lane], momenta.azimuth[lane],
+                                  momenta.coordinate_time[lane]};
+        }
+    } catch (const std::invalid_argument&) {
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            if (momentum_lanes[lane]) {
+                const DerivativeEvaluation scalar = derivative(orbits[lane], states[lane]);
+                result.status[lane] = scalar.status;
+                result.value[lane] = scalar.value;
+            }
+        }
+    } catch (const std::overflow_error&) {
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            if (momentum_lanes[lane]) {
+                const DerivativeEvaluation scalar = derivative(orbits[lane], states[lane]);
+                result.status[lane] = scalar.status;
+                result.value[lane] = scalar.value;
+            }
+        }
+    }
+    return result;
+}
+
+StepResultBatch4 rk4_step_batch4(
+    const KerrOrbitBatch4& orbits,
+    const std::array<TrajectoryPoint, avx2_double_lanes>& states,
+    const DoubleBatch4& steps, const KerrLaneMaskBatch4& active_lanes) {
+    StepResultBatch4 result;
+    result.status.fill(EvaluationStatus::invalid);
+
+    const DerivativeEvaluationBatch4 k1 =
+        derivative_batch4(orbits, states, active_lanes);
+    KerrLaneMaskBatch4 k2_active{};
+    std::array<TrajectoryPoint, avx2_double_lanes> k2_states{};
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        result.status[lane] = k1.status[lane];
+        if (active_lanes[lane] && k1.status[lane] == EvaluationStatus::valid) {
+            k2_active[lane] = true;
+            k2_states[lane] = advance(states[lane], k1.value[lane], steps[lane] / 2.0);
+        }
+    }
+
+    const DerivativeEvaluationBatch4 k2 =
+        derivative_batch4(orbits, k2_states, k2_active);
+    KerrLaneMaskBatch4 k3_active{};
+    std::array<TrajectoryPoint, avx2_double_lanes> k3_states{};
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (!k2_active[lane]) {
+            continue;
+        }
+        result.status[lane] = k2.status[lane];
+        if (k2.status[lane] == EvaluationStatus::valid) {
+            k3_active[lane] = true;
+            k3_states[lane] = advance(states[lane], k2.value[lane], steps[lane] / 2.0);
+        }
+    }
+
+    const DerivativeEvaluationBatch4 k3 =
+        derivative_batch4(orbits, k3_states, k3_active);
+    KerrLaneMaskBatch4 k4_active{};
+    std::array<TrajectoryPoint, avx2_double_lanes> k4_states{};
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (!k3_active[lane]) {
+            continue;
+        }
+        result.status[lane] = k3.status[lane];
+        if (k3.status[lane] == EvaluationStatus::valid) {
+            k4_active[lane] = true;
+            k4_states[lane] = advance(states[lane], k3.value[lane], steps[lane]);
+        }
+    }
+
+    const DerivativeEvaluationBatch4 k4 =
+        derivative_batch4(orbits, k4_states, k4_active);
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (!k4_active[lane]) {
+            continue;
+        }
+        result.status[lane] = k4.status[lane];
+        if (k4.status[lane] != EvaluationStatus::valid) {
+            continue;
+        }
+        const Derivative average{
+            (k1.value[lane].radial + 2.0 * k2.value[lane].radial +
+             2.0 * k3.value[lane].radial + k4.value[lane].radial) /
+                6.0,
+            (k1.value[lane].azimuth + 2.0 * k2.value[lane].azimuth +
+             2.0 * k3.value[lane].azimuth + k4.value[lane].azimuth) /
+                6.0,
+            (k1.value[lane].coordinate_time +
+             2.0 * k2.value[lane].coordinate_time +
+             2.0 * k3.value[lane].coordinate_time +
+             k4.value[lane].coordinate_time) /
+                6.0};
+        result.next[lane] = advance(states[lane], average, steps[lane]);
+        if (!std::isfinite(result.next[lane].radius) ||
+            !std::isfinite(result.next[lane].phi) ||
+            !std::isfinite(result.next[lane].coordinate_time)) {
+            result.status[lane] = EvaluationStatus::invalid;
+        }
+    }
+    return result;
+}
+
 std::optional<TrajectoryPoint> locate_radius_event(const KerrOrbit& orbit,
                                                     const TrajectoryPoint& state,
                                                     const double step,
@@ -532,6 +730,288 @@ Trajectory integrate_kerr_impl(const KerrOrbit& orbit, const double initial_radi
     out.diagnostics.final_step = step;
     return out;
 }
+
+KerrTrajectoryBatch4 integrate_kerr_batch4_impl(
+    const KerrOrbitBatch4& orbits, const DoubleBatch4& initial_radii,
+    const double maximum_step, const std::size_t max_steps,
+    const DoubleBatch4& escape_radii, const KerrLaneMaskBatch4& requested_lanes,
+    const KerrIntegrationControl& control) {
+    validate_integration_control(control);
+    KerrTrajectoryBatch4 outputs{};
+    KerrLaneMaskBatch4 active_lanes = requested_lanes;
+    DoubleBatch4 steps{};
+    DoubleBatch4 minimum_steps{};
+    DoubleBatch4 horizon_events{};
+    std::array<std::size_t, avx2_double_lanes> attempts{};
+    const std::size_t max_attempts =
+        max_steps > std::numeric_limits<std::size_t>::max() / 16
+            ? std::numeric_limits<std::size_t>::max()
+            : max_steps * 16;
+
+    std::array<TrajectoryPoint, avx2_double_lanes> initial_states{};
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (!active_lanes[lane]) {
+            continue;
+        }
+        validate_orbit(orbits[lane]);
+        const double horizon = kerr_outer_horizon(
+            orbits[lane].black_hole_mass, orbits[lane].spin_length);
+        horizon_events[lane] = horizon_event_radius(horizon);
+        if (!std::isfinite(initial_radii[lane]) ||
+            !std::isfinite(maximum_step) ||
+            initial_radii[lane] <= horizon_events[lane] || maximum_step <= 0.0 ||
+            max_steps == 0 || !std::isfinite(escape_radii[lane]) ||
+            escape_radii[lane] <= initial_radii[lane]) {
+            throw std::invalid_argument("invalid Kerr batch integration parameters");
+        }
+        minimum_steps[lane] =
+            control.minimum_step == 0.0
+                ? automatic_minimum_step(maximum_step, initial_radii[lane])
+                : control.minimum_step;
+        if (minimum_steps[lane] > maximum_step) {
+            throw std::invalid_argument(
+                "Kerr minimum step cannot exceed the maximum step");
+        }
+        outputs[lane].points.reserve(max_steps + 1);
+        outputs[lane].diagnostics.final_step = maximum_step;
+        steps[lane] = maximum_step;
+        initial_states[lane] = {0.0, initial_radii[lane], 0.0, 0.0, 0.0};
+    }
+
+    const DerivativeEvaluationBatch4 initial_derivatives =
+        derivative_batch4(orbits, initial_states, active_lanes);
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (!active_lanes[lane]) {
+            continue;
+        }
+        TrajectoryPoint initial = initial_states[lane];
+        if (initial_derivatives.status[lane] == EvaluationStatus::turning_point) {
+            initial.radial_velocity = 0.0;
+            outputs[lane].points.push_back(initial);
+            record_radial_residual(&outputs[lane], orbits[lane], initial);
+            outputs[lane].termination = TrajectoryTermination::turning_point;
+            active_lanes[lane] = false;
+            continue;
+        }
+        if (initial_derivatives.status[lane] != EvaluationStatus::valid) {
+            outputs[lane].points.push_back(initial);
+            outputs[lane].termination = TrajectoryTermination::invalid_state;
+            active_lanes[lane] = false;
+            continue;
+        }
+        initial.radial_velocity = initial_derivatives.value[lane].radial;
+        outputs[lane].points.push_back(initial);
+        record_radial_residual(&outputs[lane], orbits[lane], initial);
+    }
+
+    while (std::any_of(active_lanes.begin(), active_lanes.end(),
+                       [](const bool active) { return active; })) {
+        std::array<TrajectoryPoint, avx2_double_lanes> states{};
+        KerrLaneMaskBatch4 attempt_lanes{};
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            if (!active_lanes[lane]) {
+                continue;
+            }
+            if (outputs[lane].diagnostics.accepted_steps >= max_steps) {
+                active_lanes[lane] = false;
+                continue;
+            }
+            if (attempts[lane]++ >= max_attempts) {
+                outputs[lane].termination = TrajectoryTermination::invalid_state;
+                active_lanes[lane] = false;
+                continue;
+            }
+            states[lane] = outputs[lane].points.back();
+            attempt_lanes[lane] = true;
+        }
+        if (!std::any_of(attempt_lanes.begin(), attempt_lanes.end(),
+                         [](const bool active) { return active; })) {
+            break;
+        }
+
+        const DerivativeEvaluationBatch4 k1 =
+            derivative_batch4(orbits, states, attempt_lanes);
+        KerrLaneMaskBatch4 rk_lanes = attempt_lanes;
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            if (!attempt_lanes[lane]) {
+                continue;
+            }
+            Trajectory& output = outputs[lane];
+            if (k1.status[lane] == EvaluationStatus::turning_point) {
+                output.points.back().radial_velocity = 0.0;
+                record_radial_residual(&output, orbits[lane], output.points.back());
+                output.termination = TrajectoryTermination::turning_point;
+                active_lanes[lane] = false;
+                rk_lanes[lane] = false;
+                continue;
+            }
+            if (k1.status[lane] != EvaluationStatus::valid) {
+                output.termination = TrajectoryTermination::invalid_state;
+                active_lanes[lane] = false;
+                rk_lanes[lane] = false;
+                continue;
+            }
+
+            const double projected_radius =
+                states[lane].radius + steps[lane] * k1.value[lane].radial;
+            if (orbits[lane].radial_direction < 0 &&
+                crosses(states[lane].radius, projected_radius,
+                        horizon_events[lane], orbits[lane].radial_direction)) {
+                const TrajectoryPoint horizon_probe = interpolate_event(
+                    states[lane], advance(states[lane], k1.value[lane], steps[lane]),
+                    horizon_events[lane]);
+                if (const auto turning = locate_turning_point(
+                        orbits[lane], states[lane], horizon_probe);
+                    turning.has_value()) {
+                    output.points.push_back(*turning);
+                    record_radial_residual(&output, orbits[lane], *turning);
+                    ++output.diagnostics.accepted_steps;
+                    output.termination = TrajectoryTermination::turning_point;
+                } else {
+                    TrajectoryPoint event = horizon_event_point(
+                        states[lane], k1.value[lane], steps[lane],
+                        horizon_events[lane]);
+                    event.radial_velocity =
+                        physical_radial_velocity(orbits[lane], event.radius);
+                    output.points.push_back(event);
+                    record_radial_residual(&output, orbits[lane], event);
+                    ++output.diagnostics.accepted_steps;
+                    output.termination = TrajectoryTermination::crossed_horizon;
+                }
+                active_lanes[lane] = false;
+                rk_lanes[lane] = false;
+            }
+        }
+
+        const StepResultBatch4 full_steps =
+            rk4_step_batch4(orbits, states, steps, rk_lanes);
+        DoubleBatch4 half_steps{};
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            half_steps[lane] = steps[lane] / 2.0;
+        }
+        const StepResultBatch4 first_half_steps =
+            rk4_step_batch4(orbits, states, half_steps, rk_lanes);
+        KerrLaneMaskBatch4 second_half_lanes{};
+        std::array<TrajectoryPoint, avx2_double_lanes> second_half_states{};
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            if (rk_lanes[lane] &&
+                first_half_steps.status[lane] == EvaluationStatus::valid) {
+                second_half_lanes[lane] = true;
+                second_half_states[lane] = first_half_steps.next[lane];
+            }
+        }
+        const StepResultBatch4 second_half_steps = rk4_step_batch4(
+            orbits, second_half_states, half_steps, second_half_lanes);
+
+        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+            if (!rk_lanes[lane]) {
+                continue;
+            }
+            Trajectory& output = outputs[lane];
+            const EvaluationStatus second_half_status =
+                first_half_steps.status[lane] == EvaluationStatus::valid
+                    ? second_half_steps.status[lane]
+                    : first_half_steps.status[lane];
+            if (is_radial_boundary(full_steps.status[lane]) ||
+                is_radial_boundary(first_half_steps.status[lane]) ||
+                is_radial_boundary(second_half_status)) {
+                if (steps[lane] > minimum_steps[lane]) {
+                    steps[lane] =
+                        std::max(minimum_steps[lane], steps[lane] / 2.0);
+                    ++output.diagnostics.rejected_steps;
+                    continue;
+                }
+                const TrajectoryPoint probe = advance(
+                    states[lane], k1.value[lane], steps[lane]);
+                if (const auto turning = locate_turning_point(
+                        orbits[lane], states[lane], probe);
+                    turning.has_value()) {
+                    output.points.push_back(*turning);
+                    record_radial_residual(&output, orbits[lane], *turning);
+                    ++output.diagnostics.accepted_steps;
+                    output.termination = TrajectoryTermination::turning_point;
+                } else {
+                    output.termination = TrajectoryTermination::invalid_state;
+                }
+                active_lanes[lane] = false;
+                continue;
+            }
+            if (full_steps.status[lane] != EvaluationStatus::valid ||
+                first_half_steps.status[lane] != EvaluationStatus::valid ||
+                second_half_status != EvaluationStatus::valid) {
+                if (steps[lane] <= minimum_steps[lane]) {
+                    output.termination = TrajectoryTermination::invalid_state;
+                    active_lanes[lane] = false;
+                    continue;
+                }
+                steps[lane] =
+                    std::max(minimum_steps[lane], steps[lane] / 2.0);
+                ++output.diagnostics.rejected_steps;
+                continue;
+            }
+
+            const double error = normalized_rk4_error(
+                full_steps.next[lane], second_half_steps.next[lane], control);
+            if (!std::isfinite(error)) {
+                output.termination = TrajectoryTermination::invalid_state;
+                active_lanes[lane] = false;
+                continue;
+            }
+            if (error > 1.0) {
+                if (steps[lane] <= minimum_steps[lane]) {
+                    output.termination = TrajectoryTermination::invalid_state;
+                    active_lanes[lane] = false;
+                    continue;
+                }
+                steps[lane] = std::max(
+                    minimum_steps[lane],
+                    next_step_size(steps[lane], error, false, maximum_step));
+                ++output.diagnostics.rejected_steps;
+                continue;
+            }
+
+            TrajectoryPoint next = second_half_steps.next[lane];
+            next.radial_velocity =
+                physical_radial_velocity(orbits[lane], next.radius);
+            output.diagnostics.maximum_normalized_error =
+                std::max(output.diagnostics.maximum_normalized_error, error);
+            ++output.diagnostics.accepted_steps;
+
+            if (orbits[lane].radial_direction > 0 &&
+                crosses(states[lane].radius, next.radius, escape_radii[lane],
+                        orbits[lane].radial_direction)) {
+                const auto event = locate_radius_event(
+                    orbits[lane], states[lane], steps[lane], escape_radii[lane],
+                    orbits[lane].radial_direction);
+                TrajectoryPoint escape_event =
+                    event.has_value()
+                        ? *event
+                        : interpolate_event(
+                              states[lane], next, escape_radii[lane]);
+                escape_event.radial_velocity =
+                    physical_radial_velocity(orbits[lane], escape_event.radius);
+                output.points.push_back(escape_event);
+                record_radial_residual(&output, orbits[lane], escape_event);
+                output.termination = TrajectoryTermination::reached_escape_radius;
+                active_lanes[lane] = false;
+                continue;
+            }
+
+            output.points.push_back(next);
+            record_radial_residual(&output, orbits[lane], next);
+            steps[lane] = std::max(
+                minimum_steps[lane],
+                next_step_size(steps[lane], error, true, maximum_step));
+        }
+    }
+
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (requested_lanes[lane]) {
+            outputs[lane].diagnostics.final_step = steps[lane];
+        }
+    }
+    return outputs;
+}
 }  // namespace
 
 double kerr_spin_length(const double mass, const double dimensionless_spin) {
@@ -788,6 +1268,15 @@ Trajectory integrate_kerr(const KerrOrbit& orbit, const double initial_radius,
                           const KerrIntegrationControl& control) {
     return integrate_kerr_impl(orbit, initial_radius, step, max_steps, escape_radius,
                                std::nullopt, control);
+}
+
+KerrTrajectoryBatch4 integrate_kerr_batch4(
+    const KerrOrbitBatch4& orbits, const DoubleBatch4& initial_radii,
+    const double step, const std::size_t max_steps,
+    const DoubleBatch4& escape_radii, const KerrLaneMaskBatch4& active_lanes,
+    const KerrIntegrationControl& control) {
+    return integrate_kerr_batch4_impl(orbits, initial_radii, step, max_steps,
+                                      escape_radii, active_lanes, control);
 }
 
 Trajectory integrate_kerr_to_radius(const KerrOrbit& orbit, const double initial_radius,

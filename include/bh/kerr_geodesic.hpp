@@ -58,6 +58,10 @@ struct KerrFourMomentumBatch4Input {
     std::array<int, avx2_double_lanes> radial_directions{};
 };
 
+using KerrOrbitBatch4 = std::array<KerrOrbit, avx2_double_lanes>;
+using KerrTrajectoryBatch4 = std::array<Trajectory, avx2_double_lanes>;
+using KerrLaneMaskBatch4 = std::array<bool, avx2_double_lanes>;
+
 [[nodiscard]] double kerr_spin_length(double mass, double dimensionless_spin);
 [[nodiscard]] double kerr_inner_horizon(double mass, double spin_length);
 [[nodiscard]] double kerr_outer_horizon(double mass, double spin_length);
@@ -78,6 +82,13 @@ struct KerrFourMomentumBatch4Input {
                                         double step, std::size_t max_steps,
                                         double escape_radius,
                                         const KerrIntegrationControl& control = {});
+// Integrates up to four independent fragment trajectories in lockstep. Each
+// active lane retains its own adaptive step and termination state.
+[[nodiscard]] KerrTrajectoryBatch4 integrate_kerr_batch4(
+    const KerrOrbitBatch4& orbits, const DoubleBatch4& initial_radii,
+    double step, std::size_t max_steps, const DoubleBatch4& escape_radii,
+    const KerrLaneMaskBatch4& active_lanes,
+    const KerrIntegrationControl& control = {});
 [[nodiscard]] Trajectory integrate_kerr_to_radius(const KerrOrbit& orbit,
                                                    double initial_radius,
                                                    double target_radius,

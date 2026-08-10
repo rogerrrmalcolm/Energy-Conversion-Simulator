@@ -62,6 +62,28 @@ struct PenroseEventResult {
     Trajectory escaping_trajectory{};
 };
 
+// Compact result used while scanning candidate parameter grids. It preserves
+// classification data and trajectory outcomes without retaining trajectory points.
+struct PenroseEventSummary {
+    PenroseEventStatus status{PenroseEventStatus::physics_invalid};
+    PenroseSplitParameters split{};
+    double input_energy{};
+    double captured_energy{};
+    double escaping_energy{};
+    double eta_penrose{};
+    double extracted_energy{};
+    double maximum_normalized_residual{};
+    TrajectoryTermination incoming_termination{TrajectoryTermination::completed};
+    TrajectoryTermination captured_termination{TrajectoryTermination::completed};
+    TrajectoryTermination escaping_termination{TrajectoryTermination::completed};
+};
+
+struct PenroseEventBatch4Result {
+    std::array<PenroseEventSummary, avx2_double_lanes> events{};
+    // True only when this batch reached AVX2 arithmetic; early parent exits remain false.
+    bool used_avx2{};
+};
+
 struct PenroseEnergyBatch4Input {
     DoubleBatch4 input_energies{};
     DoubleBatch4 escaping_energies{};
@@ -138,6 +160,13 @@ struct PenroseConservationBatch4Result {
     const PenroseFragmentSplitBatch4Input& input);
 [[nodiscard]] PenroseConservationBatch4Result penrose_conservation_residuals_batch4(
     const PenroseConservationBatch4Input& input);
+[[nodiscard]] bool penrose_batch4_uses_avx2() noexcept;
+// Evaluates four split angles that share one split radius and incoming Lz. The
+// shared incoming geodesic is prepared once; selected candidates are still
+// re-evaluated through the full scalar API below before being returned.
+[[nodiscard]] PenroseEventBatch4Result evaluate_equatorial_penrose_angle_batch4(
+    const EquatorialPenroseScenario& scenario,
+    const std::array<PenroseSplitParameters, avx2_double_lanes>& splits);
 [[nodiscard]] PenroseEventResult evaluate_equatorial_penrose_event(
     const EquatorialPenroseScenario& scenario, const PenroseSplitParameters& split);
 }
