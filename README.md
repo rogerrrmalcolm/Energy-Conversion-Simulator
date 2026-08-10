@@ -323,19 +323,27 @@ Several implemented choices already support reliable performance work:
   optimization regressions observable.
 
 Graph bookkeeping costs approximately `O((V + E) log V)` with the binary heap
-and ordered maps, but geodesic integration dominates runtime. Controlled
-25,000-node exhaustive phase-map runs produced:
+and ordered maps, but geodesic integration dominates runtime.
 
-| Release backend | Elapsed | Throughput |
-| --- | ---: | ---: |
-| Historical node-at-a-time scalar | 656.839 s | 38.061 nodes/s |
-| Portable scalar batch4 (`-O3`) | 202.058 s | 123.727 nodes/s |
-| AVX2 batch4 (`-O3 -mavx2`) | 194.732 s | 128.382 nodes/s |
+### Measured Performance Improvement Grid
 
-Against the matched portable batch backend, AVX2 delivered a measured 1.0376x
-throughput ratio, 3.76% more nodes per second, and 3.63% lower runtime. The full
-batching plus AVX2 change was 3.373x faster than the historical node-at-a-time
-baseline, but most of that gain comes from shared-parent reuse rather than SIMD.
+Controlled 25,000-node exhaustive phase-map runs produced:
+
+| Release backend | Runtime | Throughput | Speedup vs original | Runtime reduction |
+| --- | ---: | ---: | ---: | ---: |
+| Historical node-at-a-time scalar | 656.839 s | 38.061 nodes/s | 1.000x | Baseline |
+| Portable scalar batch4 (`-O3`) | 202.058 s | 123.727 nodes/s | 3.251x | 69.24% |
+| AVX2 batch4 (`-O3 -mavx2`) | 194.732 s | 128.382 nodes/s | **3.373x** | **70.35%** |
+
+| Isolated AVX2 improvement over portable batch4 | Measured result |
+| --- | ---: |
+| Throughput ratio | 1.0376x |
+| Throughput increase | **3.76%** |
+| Runtime reduction | **3.63%** |
+
+The 3.373x end-to-end result includes four-node batching, shared-parent reuse,
+and AVX2. The isolated SIMD claim is the matched AVX2-versus-portable comparison
+in the second grid.
 The graph dispatched 6,000 four-node batches covering 24,000 nodes and 1,000
 scalar tail nodes; 5,592 batches reached AVX2 arithmetic, while 408 terminated
 during incoming-geodesic preparation. All runs returned identical status counts,
