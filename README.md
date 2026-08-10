@@ -325,6 +325,27 @@ Several implemented choices already support reliable performance work:
 Graph bookkeeping costs approximately `O((V + E) log V)` with the binary heap
 and ordered maps, but geodesic integration dominates runtime.
 
+### Scalar And AVX2 CI Gate
+
+```text
+Build scalar kernel
+        |
+Build AVX2 kernel
+        |
+Run the same deterministic simulation inputs
+        |
+Compare physics outputs within tolerance
+        |
+Benchmark median execution time
+        |
+Report whether AVX2 is faster
+```
+
+Output mismatches or failure to dispatch an AVX2 batch stop CI and CD. Timing
+is reported but is not a hard gate on shared GitHub runners, where CPU load and
+virtualization can make small speed differences noisy. A controlled self-hosted
+runner can add `--require-speedup` to enforce the final performance condition.
+
 ### Measured Performance Improvement Grid
 
 Controlled 25,000-node exhaustive phase-map runs produced:
@@ -386,6 +407,21 @@ ctest --test-dir build --output-on-failure
 cmake -S . -B build-avx2 -DCMAKE_BUILD_TYPE=Release -DBH_ENABLE_AVX2=ON
 cmake --build build-avx2
 ```
+
+## Docker
+
+```powershell
+docker build -t black-hole-simulator:local .
+docker run --rm black-hole-simulator:local --algebraic 1.98847e31 0.9
+# Authenticate first unless the GHCR package has been made public.
+docker pull ghcr.io/rogerrrmalcolm/energy-conversion-simulator:latest
+```
+
+The GitHub Actions workflow validates the image on pull requests. Pushes to
+`main` publish `latest` and commit tags to GHCR; tags such as `v0.1.0` also
+publish semantic-version tags. The default `linux/amd64` image has AVX2
+enabled and requires an AVX2-capable x86-64 host. A portable local
+image can instead be built with `--build-arg BH_ENABLE_AVX2=OFF`.
 
 All 13 current tests pass. They cover algebraic limits and uncertainty, radial
 potentials, integration events and residuals, Penrose conservation and
