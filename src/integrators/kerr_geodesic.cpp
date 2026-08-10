@@ -68,6 +68,93 @@ double angular_offset(const KerrOrbit& orbit) {
     return orbit.angular_momentum - orbit.spin_length * orbit.energy;
 }
 
+#if defined(BH_ENABLE_AVX2)
+struct KerrRadialTerms4 {
+    __m256d radius_squared;
+    __m256d spin_squared;
+    __m256d delta;
+    __m256d p;
+    __m256d offset;
+    __m256d potential;
+};
+
+bool store_finite4(const __m256d values, DoubleBatch4& output) noexcept {
+    _mm256_storeu_pd(output.data(), values);
+    return std::all_of(output.begin(), output.end(),
+                       [](const double value) { return std::isfinite(value); });
+}
+
+void validate_radial_batch4(const KerrRadialPotentialBatch4& batch) {
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        validate_orbit({batch.black_hole_masses[lane], batch.spin_lengths[lane],
+                        batch.energies[lane], batch.angular_momenta[lane],
+                        batch.rest_masses[lane], 1, batch.carter_constants[lane]});
+        if (!std::isfinite(batch.radii[lane]) || batch.radii[lane] <= 0.0) {
+            throw std::invalid_argument("radius must be finite and positive");
+        }
+    }
+}
+
+KerrRadialTerms4 evaluate_radial_terms4(const KerrRadialPotentialBatch4& batch) {
+    const __m256d mass = _mm256_loadu_pd(batch.black_hole_masses.data());
+    const __m256d spin = _mm256_loadu_pd(batch.spin_lengths.data());
+    const __m256d energy = _mm256_loadu_pd(batch.energies.data());
+    const __m256d angular_momentum = _mm256_loadu_pd(batch.angular_momenta.data());
+    const __m256d rest_mass = _mm256_loadu_pd(batch.rest_masses.data());
+    const __m256d radius = _mm256_loadu_pd(batch.radii.data());
+    const __m256d radius_squared = _mm256_mul_pd(radius, radius);
+    const __m256d spin_squared = _mm256_mul_pd(spin, spin);
+    const __m256d delta = _mm256_add_pd(
+        _mm256_sub_pd(radius_squared,
+                      _mm256_mul_pd(_mm256_set1_pd(2.0), _mm256_mul_pd(mass, radius))),
+        spin_squared);
+    const __m256d p = _mm256_sub_pd(
+        _mm256_mul_pd(energy, _mm256_add_pd(radius_squared, spin_squared)),
+        _mm256_mul_pd(spin, angular_momentum));
+    const __m256d offset =
+        _mm256_sub_pd(angular_momentum, _mm256_mul_pd(spin, energy));
+    const __m256d rest_mass_term = _mm256_mul_pd(
+        _mm256_mul_pd(_mm256_mul_pd(rest_mass, rest_mass), radius), radius);
+    const __m256d potential = _mm256_sub_pd(
+        _mm256_mul_pd(p, p),
+        _mm256_mul_pd(delta,
+                      _mm256_add_pd(_mm256_add_pd(rest_mass_term,
+                                                  _mm256_mul_pd(offset, offset)),
+                                    _mm256_loadu_pd(batch.carter_constants.data()))));
+    return {radius_squared, spin_squared, delta, p, offset, potential};
+}
+
+KerrFourMomentumBatch4 evaluate_four_momentum4(
+    const KerrRadialPotentialBatch4& states, const DoubleBatch4& directions,
+    const KerrRadialTerms4& terms) {
+    const __m256d spin = _mm256_loadu_pd(states.spin_lengths.data());
+    const __m256d direction = _mm256_loadu_pd(directions.data());
+    const __m256d coordinate_time = _mm256_div_pd(
+        _mm256_add_pd(_mm256_mul_pd(spin, terms.offset),
+                      _mm256_div_pd(
+                          _mm256_mul_pd(
+                              _mm256_add_pd(terms.radius_squared, terms.spin_squared),
+                              terms.p),
+                          terms.delta)),
+        terms.radius_squared);
+    const __m256d radial = _mm256_div_pd(
+        _mm256_mul_pd(direction,
+                      _mm256_sqrt_pd(
+                          _mm256_max_pd(terms.potential, _mm256_setzero_pd()))),
+        terms.radius_squared);
+    const __m256d azimuth = _mm256_div_pd(
+        _mm256_add_pd(terms.offset,
+                      _mm256_div_pd(_mm256_mul_pd(spin, terms.p), terms.delta)),
+        terms.radius_squared);
+
+    KerrFourMomentumBatch4 result;
+    _mm256_storeu_pd(result.coordinate_time.data(), coordinate_time);
+    _mm256_storeu_pd(result.radial.data(), radial);
+    _mm256_storeu_pd(result.azimuth.data(), azimuth);
+    return result;
+}
+#endif
+
 struct Derivative {
     double radial{};
     double azimuth{};
@@ -253,6 +340,44 @@ struct StepResultBatch4 {
     std::array<TrajectoryPoint, avx2_double_lanes> next{};
 };
 
+void evaluate_scalar_lanes(
+    DerivativeEvaluationBatch4& result, const KerrOrbitBatch4& orbits,
+    const std::array<TrajectoryPoint, avx2_double_lanes>& states,
+    const KerrLaneMaskBatch4& lanes) {
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (!lanes[lane]) {
+            continue;
+        }
+        const DerivativeEvaluation scalar = derivative(orbits[lane], states[lane]);
+        result.status[lane] = scalar.status;
+        result.value[lane] = scalar.value;
+    }
+}
+
+void assign_momentum_lanes(
+    DerivativeEvaluationBatch4& result, const KerrFourMomentumBatch4& momenta,
+    const KerrOrbitBatch4& orbits,
+    const std::array<TrajectoryPoint, avx2_double_lanes>& states,
+    const KerrLaneMaskBatch4& lanes) {
+    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
+        if (!lanes[lane]) {
+            continue;
+        }
+        if (!std::isfinite(momenta.radial[lane]) ||
+            !std::isfinite(momenta.azimuth[lane]) ||
+            !std::isfinite(momenta.coordinate_time[lane]) ||
+            momenta.coordinate_time[lane] <= 0.0) {
+            const DerivativeEvaluation scalar = derivative(orbits[lane], states[lane]);
+            result.status[lane] = scalar.status;
+            result.value[lane] = scalar.value;
+            continue;
+        }
+        result.status[lane] = EvaluationStatus::valid;
+        result.value[lane] = {momenta.radial[lane], momenta.azimuth[lane],
+                              momenta.coordinate_time[lane]};
+    }
+}
+
 DerivativeEvaluationBatch4 derivative_batch4(
     const KerrOrbitBatch4& orbits,
     const std::array<TrajectoryPoint, avx2_double_lanes>& states,
@@ -282,6 +407,9 @@ DerivativeEvaluationBatch4 derivative_batch4(
     }
 
     KerrRadialPotentialBatch4 potential_input;
+#if defined(BH_ENABLE_AVX2)
+    DoubleBatch4 candidate_directions{};
+#endif
     for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
         const std::size_t source = candidates[lane] ? lane : fallback_lane;
         potential_input.black_hole_masses[lane] = orbits[source].black_hole_mass;
@@ -291,8 +419,23 @@ DerivativeEvaluationBatch4 derivative_batch4(
         potential_input.rest_masses[lane] = orbits[source].rest_mass;
         potential_input.carter_constants[lane] = orbits[source].carter_constant;
         potential_input.radii[lane] = states[source].radius;
+#if defined(BH_ENABLE_AVX2)
+        candidate_directions[lane] =
+            static_cast<double>(orbits[source].radial_direction);
+#endif
     }
+#if defined(BH_ENABLE_AVX2)
+    const KerrRadialTerms4 radial_terms = evaluate_radial_terms4(potential_input);
+    DoubleBatch4 potentials{};
+    if (!store_finite4(radial_terms.potential, potentials)) {
+        evaluate_scalar_lanes(result, orbits, states, candidates);
+        return result;
+    }
+    const KerrFourMomentumBatch4 candidate_momenta =
+        evaluate_four_momentum4(potential_input, candidate_directions, radial_terms);
+#else
     const DoubleBatch4 potentials = kerr_radial_potential_batch4(potential_input);
+#endif
 
     KerrLaneMaskBatch4 momentum_lanes{};
     fallback_lane = avx2_double_lanes;
@@ -313,6 +456,9 @@ DerivativeEvaluationBatch4 derivative_batch4(
         return result;
     }
 
+#if defined(BH_ENABLE_AVX2)
+    assign_momentum_lanes(result, candidate_momenta, orbits, states, momentum_lanes);
+#else
     KerrFourMomentumBatch4Input momentum_input;
     for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
         const std::size_t source = momentum_lanes[lane] ? lane : fallback_lane;
@@ -341,22 +487,11 @@ DerivativeEvaluationBatch4 derivative_batch4(
                                   momenta.coordinate_time[lane]};
         }
     } catch (const std::invalid_argument&) {
-        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
-            if (momentum_lanes[lane]) {
-                const DerivativeEvaluation scalar = derivative(orbits[lane], states[lane]);
-                result.status[lane] = scalar.status;
-                result.value[lane] = scalar.value;
-            }
-        }
+        evaluate_scalar_lanes(result, orbits, states, momentum_lanes);
     } catch (const std::overflow_error&) {
-        for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
-            if (momentum_lanes[lane]) {
-                const DerivativeEvaluation scalar = derivative(orbits[lane], states[lane]);
-                result.status[lane] = scalar.status;
-                result.value[lane] = scalar.value;
-            }
-        }
+        evaluate_scalar_lanes(result, orbits, states, momentum_lanes);
     }
+#endif
     return result;
 }
 
@@ -1089,46 +1224,11 @@ double kerr_radial_potential(const KerrOrbit& orbit, const double radius) {
 DoubleBatch4 kerr_radial_potential_batch4(
     const KerrRadialPotentialBatch4& batch) {
 #if defined(BH_ENABLE_AVX2)
-    for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
-        validate_orbit({batch.black_hole_masses[lane], batch.spin_lengths[lane],
-                        batch.energies[lane], batch.angular_momenta[lane],
-                        batch.rest_masses[lane], 1, batch.carter_constants[lane]});
-        if (!std::isfinite(batch.radii[lane]) || batch.radii[lane] <= 0.0) {
-            throw std::invalid_argument("radius must be finite and positive");
-        }
-    }
-
-    const __m256d mass = _mm256_loadu_pd(batch.black_hole_masses.data());
-    const __m256d spin = _mm256_loadu_pd(batch.spin_lengths.data());
-    const __m256d energy = _mm256_loadu_pd(batch.energies.data());
-    const __m256d angular_momentum = _mm256_loadu_pd(batch.angular_momenta.data());
-    const __m256d rest_mass = _mm256_loadu_pd(batch.rest_masses.data());
-    const __m256d carter_constant = _mm256_loadu_pd(batch.carter_constants.data());
-    const __m256d radius = _mm256_loadu_pd(batch.radii.data());
-    const __m256d radius_squared = _mm256_mul_pd(radius, radius);
-    const __m256d spin_squared = _mm256_mul_pd(spin, spin);
-    const __m256d delta = _mm256_add_pd(
-        _mm256_sub_pd(radius_squared,
-                      _mm256_mul_pd(_mm256_set1_pd(2.0), _mm256_mul_pd(mass, radius))),
-        spin_squared);
-    const __m256d p = _mm256_sub_pd(
-        _mm256_mul_pd(energy, _mm256_add_pd(radius_squared, spin_squared)),
-        _mm256_mul_pd(spin, angular_momentum));
-    const __m256d offset =
-        _mm256_sub_pd(angular_momentum, _mm256_mul_pd(spin, energy));
-    const __m256d rest_mass_term = _mm256_mul_pd(
-        _mm256_mul_pd(_mm256_mul_pd(rest_mass, rest_mass), radius), radius);
-    const __m256d potential = _mm256_sub_pd(
-        _mm256_mul_pd(p, p),
-        _mm256_mul_pd(delta,
-                      _mm256_add_pd(_mm256_add_pd(rest_mass_term,
-                                                  _mm256_mul_pd(offset, offset)),
-                                    carter_constant)));
-
+    validate_radial_batch4(batch);
+    const KerrRadialTerms4 terms = evaluate_radial_terms4(batch);
     std::array<double, avx2_double_lanes> result{};
-    _mm256_storeu_pd(result.data(), potential);
-    for (const double value : result) {
-        finite_or_throw(value, "Kerr radial potential overflowed");
+    if (!store_finite4(terms.potential, result)) {
+        throw std::overflow_error("Kerr radial potential overflowed");
     }
     return result;
 #else
@@ -1146,7 +1246,12 @@ DoubleBatch4 kerr_radial_potential_batch4(
 KerrFourMomentumBatch4 kerr_equatorial_four_momentum_batch4(
     const KerrFourMomentumBatch4Input& batch) {
 #if defined(BH_ENABLE_AVX2)
-    const DoubleBatch4 potentials = kerr_radial_potential_batch4(batch.states);
+    validate_radial_batch4(batch.states);
+    const KerrRadialTerms4 terms = evaluate_radial_terms4(batch.states);
+    DoubleBatch4 potentials{};
+    if (!store_finite4(terms.potential, potentials)) {
+        throw std::overflow_error("Kerr radial potential overflowed");
+    }
     DoubleBatch4 directions{};
     for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
         if (batch.radial_directions[lane] != -1 && batch.radial_directions[lane] != 1) {
@@ -1164,43 +1269,8 @@ KerrFourMomentumBatch4 kerr_equatorial_four_momentum_batch4(
         directions[lane] = static_cast<double>(batch.radial_directions[lane]);
     }
 
-    const __m256d spin = _mm256_loadu_pd(batch.states.spin_lengths.data());
-    const __m256d energy = _mm256_loadu_pd(batch.states.energies.data());
-    const __m256d angular_momentum =
-        _mm256_loadu_pd(batch.states.angular_momenta.data());
-    const __m256d radius = _mm256_loadu_pd(batch.states.radii.data());
-    const __m256d radius_squared = _mm256_mul_pd(radius, radius);
-    const __m256d spin_squared = _mm256_mul_pd(spin, spin);
-    const __m256d mass = _mm256_loadu_pd(batch.states.black_hole_masses.data());
-    const __m256d delta = _mm256_add_pd(
-        _mm256_sub_pd(radius_squared,
-                      _mm256_mul_pd(_mm256_set1_pd(2.0), _mm256_mul_pd(mass, radius))),
-        spin_squared);
-    const __m256d p = _mm256_sub_pd(
-        _mm256_mul_pd(energy, _mm256_add_pd(radius_squared, spin_squared)),
-        _mm256_mul_pd(spin, angular_momentum));
-    const __m256d offset =
-        _mm256_sub_pd(angular_momentum, _mm256_mul_pd(spin, energy));
-    const __m256d potential = _mm256_loadu_pd(potentials.data());
-    const __m256d direction = _mm256_loadu_pd(directions.data());
-
-    KerrFourMomentumBatch4 result;
-    const __m256d coordinate_time = _mm256_div_pd(
-        _mm256_add_pd(_mm256_mul_pd(spin, offset),
-                      _mm256_div_pd(
-                          _mm256_mul_pd(_mm256_add_pd(radius_squared, spin_squared), p),
-                          delta)),
-        radius_squared);
-    const __m256d radial = _mm256_div_pd(
-        _mm256_mul_pd(direction,
-                      _mm256_sqrt_pd(_mm256_max_pd(potential, _mm256_setzero_pd()))),
-        radius_squared);
-    const __m256d azimuth = _mm256_div_pd(
-        _mm256_add_pd(offset, _mm256_div_pd(_mm256_mul_pd(spin, p), delta)),
-        radius_squared);
-    _mm256_storeu_pd(result.coordinate_time.data(), coordinate_time);
-    _mm256_storeu_pd(result.radial.data(), radial);
-    _mm256_storeu_pd(result.azimuth.data(), azimuth);
+    KerrFourMomentumBatch4 result =
+        evaluate_four_momentum4(batch.states, directions, terms);
 
     for (std::size_t lane = 0; lane < avx2_double_lanes; ++lane) {
         if (!std::isfinite(result.coordinate_time[lane]) ||
