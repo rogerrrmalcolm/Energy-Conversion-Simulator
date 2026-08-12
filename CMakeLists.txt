@@ -48,6 +48,8 @@ endif()
 
 add_executable(black_hole_demo src/app/main.cpp)
 target_link_libraries(black_hole_demo PRIVATE bh::models)
+target_compile_definitions(black_hole_demo PRIVATE BH_VERSION="${PROJECT_VERSION}")
+set_target_properties(black_hole_demo PROPERTIES OUTPUT_NAME black-hole-sim)
 
 if(BH_BUILD_TESTS)
     enable_testing()
@@ -68,6 +70,17 @@ if(BH_BUILD_TESTS)
     set_tests_properties(cli_help PROPERTIES
         PASS_REGULAR_EXPRESSION "Usage:")
 
+    add_test(NAME cli_version COMMAND black_hole_demo --version)
+    set_tests_properties(cli_version PROPERTIES
+        PASS_REGULAR_EXPRESSION "black-hole-sim ${PROJECT_VERSION}")
+
+    add_test(NAME cli_default_interactive COMMAND ${CMAKE_COMMAND}
+        "-DEXECUTABLE=$<TARGET_FILE:black_hole_demo>"
+        "-DINPUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/interactive_exit.txt"
+        "-DREQUIRED_MESSAGES=Unified interactive simulation session|Shared simulation session"
+        "-DCLI_ARGUMENTS="
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_cli_success.cmake")
+
     add_test(NAME cli_algebraic COMMAND black_hole_demo --algebraic 1.98847e31 0.9)
     set_tests_properties(cli_algebraic PROPERTIES
         PASS_REGULAR_EXPRESSION "rotational reservoir:")
@@ -86,6 +99,9 @@ if(BH_BUILD_TESTS)
 
     add_interactive_cli_test(cli_interactive_penrose_search interactive_penrose_search.txt
         "Accepted search window: 2 x 1 x 1 = 2 nodes|target Penrose efficiency: 1.500000e+01 %|complete discrete window contains no candidate reaching|completed no-target windows: 2|overall best parameters:     (1.120000e+00, 2.080000e+00, -1.980000e+00)|overall best efficiency:     7.734502e+00 %")
+
+    add_interactive_cli_test(cli_interactive_error_recovery interactive_invalid_action.txt
+        "Action failed: invalid plasma model input|The session is still active")
 
     add_test(NAME cli_penrose_reference COMMAND black_hole_demo --scenario
         "${CMAKE_CURRENT_SOURCE_DIR}/scenarios/equatorial_penrose_reference.cfg")

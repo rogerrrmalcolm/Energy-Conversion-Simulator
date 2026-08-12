@@ -17,6 +17,10 @@
 #include <string>
 #include <string_view>
 
+#ifndef BH_VERSION
+#define BH_VERSION "development"
+#endif
+
 namespace {
 double evaluated_nodes_per_second(const bh::PenroseDijkstraSearchDiagnostics& diagnostics) {
     const double seconds = std::chrono::duration<double>(diagnostics.elapsed).count();
@@ -135,6 +139,7 @@ void print_integration_diagnostics(const std::string_view label,
 
 void print_usage(const std::string_view program_name) {
     std::cout << "Usage:\n"
+              << "  " << program_name << "\n"
               << "  " << program_name << " --algebraic <mass_kg> <a_star>\n"
               << "  " << program_name
               << " --algebraic-range <mass_low_kg> <mass_mid_kg> <mass_high_kg>"
@@ -142,10 +147,12 @@ void print_usage(const std::string_view program_name) {
               << "  " << program_name
               << " --toy-plasma <magnetic_field_tesla> <mass_density_kg_m3> <flow_area_m2>"
                  " <a_star> <duration_seconds>\n"
-              << "  " << program_name << " --scenario <path-to-event.cfg>\n\n"
-              << "  " << program_name << " --search-penrose <path-to-search.cfg>\n\n"
-              << "  " << program_name << " --map-penrose <path-to-search.cfg>\n\n"
-              << "  " << program_name << " --interactive\n\n"
+              << "  " << program_name << " --scenario <path-to-event.cfg>\n"
+              << "  " << program_name << " --search-penrose <path-to-search.cfg>\n"
+              << "  " << program_name << " --map-penrose <path-to-search.cfg>\n"
+              << "  " << program_name << " --interactive\n"
+              << "  " << program_name << " --version\n\n"
+              << "Running without arguments opens the interactive engine.\n"
               << "The scenario command evaluates one declared equatorial Penrose event."
                  " It does not search or optimize parameters.\n"
               << "The search-penrose command runs Dijkstra over a declared bounded parameter"
@@ -157,6 +164,10 @@ void print_usage(const std::string_view program_name) {
                  " not an MHD or GRMHD simulation.\n"
               << "The interactive command opens a shared session and retains black-hole state"
                  " across engines.\n";
+}
+
+void print_version() {
+    std::cout << "black-hole-sim " << BH_VERSION << '\n';
 }
 
 void print_algebraic_result(const bh::RotationalEnergyResult& result) {
@@ -928,30 +939,36 @@ void run_interactive() {
                   << "  6. Run bounded 15% Penrose parameter search\n"
                   << "  7. Run reduced toy-plasma transport\n"
                   << "  8. End session\n";
-        switch (prompt_choice("Choose an action", 5, 1, 8)) {
-        case 1:
-            configure_shared_black_hole(session);
-            break;
-        case 2:
-            configure_shared_trajectory_control(session);
-            break;
-        case 3:
-            run_interactive_algebraic(session);
-            break;
-        case 4:
-            run_interactive_kerr(session);
-            break;
-        case 5:
-            run_interactive_penrose(session);
-            break;
-        case 6:
-            run_interactive_penrose_search(session);
-            break;
-        case 7:
-            run_interactive_toy_plasma(session);
-            break;
-        case 8:
-            return;
+        const int action = prompt_choice("Choose an action", 5, 1, 8);
+        try {
+            switch (action) {
+            case 1:
+                configure_shared_black_hole(session);
+                break;
+            case 2:
+                configure_shared_trajectory_control(session);
+                break;
+            case 3:
+                run_interactive_algebraic(session);
+                break;
+            case 4:
+                run_interactive_kerr(session);
+                break;
+            case 5:
+                run_interactive_penrose(session);
+                break;
+            case 6:
+                run_interactive_penrose_search(session);
+                break;
+            case 7:
+                run_interactive_toy_plasma(session);
+                break;
+            case 8:
+                return;
+            }
+        } catch (const std::exception& error) {
+            std::cout << "\nAction failed: " << error.what() << "\n"
+                      << "The session is still active; adjust the inputs and try again.\n";
         }
     }
 }
@@ -960,9 +977,17 @@ void run_interactive() {
 int main(const int argc, char* argv[]) {
     std::cout << std::scientific << std::setprecision(6);
     try {
+        if (argc == 1) {
+            run_interactive();
+            return 0;
+        }
         if (argc == 2 && (std::string_view(argv[1]) == "--help" ||
                           std::string_view(argv[1]) == "-h")) {
             print_usage(argv[0]);
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--version") {
+            print_version();
             return 0;
         }
         if (argc >= 2 && std::string_view(argv[1]) == "--algebraic") {

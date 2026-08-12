@@ -2,8 +2,12 @@ if(NOT DEFINED EXECUTABLE OR NOT DEFINED INPUT_FILE OR NOT DEFINED REQUIRED_MESS
     message(FATAL_ERROR "EXECUTABLE, INPUT_FILE, and REQUIRED_MESSAGES are required")
 endif()
 
+if(NOT DEFINED CLI_ARGUMENTS)
+    set(CLI_ARGUMENTS --interactive)
+endif()
+
 execute_process(
-    COMMAND "${EXECUTABLE}" --interactive
+    COMMAND "${EXECUTABLE}" ${CLI_ARGUMENTS}
     INPUT_FILE "${INPUT_FILE}"
     RESULT_VARIABLE exit_code
     OUTPUT_VARIABLE output
@@ -11,7 +15,7 @@ execute_process(
 
 if(NOT exit_code EQUAL 0)
     message(FATAL_ERROR
-        "Interactive CLI failed with exit code ${exit_code}.\nstdout:\n${output}\nstderr:\n${error_output}")
+        "CLI workflow failed with exit code ${exit_code}.\nstdout:\n${output}\nstderr:\n${error_output}")
 endif()
 
 string(REPLACE "|" ";" required_message_list "${REQUIRED_MESSAGES}")

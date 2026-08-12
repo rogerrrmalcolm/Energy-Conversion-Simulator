@@ -397,15 +397,15 @@ goal selection and residual tolerances should become performance claims.
 ## Build And Verify
 
 ```powershell
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-ctest --test-dir build --output-on-failure
-.\build\black_hole_demo.exe --interactive
-.\build\black_hole_demo.exe --search-penrose .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
+cmake -S . -B build-cli -DCMAKE_BUILD_TYPE=Release -DBH_ENABLE_AVX2=ON
+cmake --build build-cli
+ctest --test-dir build-cli --output-on-failure
+cmake --install build-cli --prefix .dist/black-hole-sim
 
-# Separate AVX2-enabled build on a compatible x86-64 CPU
-cmake -S . -B build-avx2 -DCMAKE_BUILD_TYPE=Release -DBH_ENABLE_AVX2=ON
-cmake --build build-avx2
+# A bare launch opens the interactive engine.
+.\.dist\black-hole-sim\bin\black-hole-sim.exe
+.\.dist\black-hole-sim\bin\black-hole-sim.exe --help
+.\.dist\black-hole-sim\bin\black-hole-sim.exe --search-penrose .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
 ```
 
 ## Docker

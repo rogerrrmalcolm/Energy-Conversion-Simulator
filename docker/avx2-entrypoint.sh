@@ -6,4 +6,4 @@ if ! grep -qw avx2 /proc/cpuinfo; then
     exit 78
 fi
 
-exec /opt/black-hole/bin/black_hole_demo "$@"
+exec /opt/black-hole/bin/black-hole-sim "$@"
