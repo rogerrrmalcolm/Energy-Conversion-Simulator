@@ -4,8 +4,9 @@ This project is a deterministic C++20 scientific-computing engine for studying
 idealized energy extraction from rotating black holes. It combines algebraic
 Kerr energy estimates, numerical geodesic integration, a locally
 four-momentum-conserving Penrose split, and graph search over candidate split
-parameters. The current implementation is a scalar, equatorial research
-baseline. It calculates theoretical scenarios; it does not claim that energy
+parameters. The current implementation is a single-threaded, equatorial
+research baseline with portable four-state batching and an optional AVX2
+backend. It calculates theoretical scenarios; it does not claim that energy
 has been extracted from an observed black hole or can be delivered to Earth.
 
 ## Model Pipeline
@@ -379,20 +380,42 @@ an entire angle row instead of one four-node batch, then compact active fragment
 lanes before integration. That will reduce repeated parent work and wasted SIMD
 lanes when neighboring trajectories terminate at different times.
 
-After profiling, independent phase-map tiles can be distributed across a fixed
-`std::jthread` worker pool and merged by canonical key for deterministic output.
-A structure-of-arrays batch would then store contiguous radii, energies,
-angular momenta, and spins. SIMD is best applied to uniform arithmetic such as
-`Delta`, radial-potential, metric, coordinate-transform, and residual
-evaluation. Adaptive trajectories with different step counts should not be
-forced into the same vector lanes without grouping or active-lane compaction.
+The execution model intentionally remains single-threaded so scalar and AVX2
+behavior can be compared without thread scheduling or shared-state noise.
+Four-lane arrays keep radii, energies, angular momenta, and spins contiguous.
+SIMD is best applied to uniform arithmetic such as `Delta`, radial-potential,
+metric, coordinate-transform, and residual evaluation. Adaptive trajectories
+with different step counts are not forced into one lockstep path; every lane
+retains its own active state, step size, and termination reason.
 
-Benchmarks must compare identical validated inputs in scalar-single-thread,
-scalar-multithread, SIMD-single-thread, and SIMD-multithread modes. Required
-measurements include throughput, median and tail latency, scaling efficiency,
-vector ISA, compiler flags, cache misses, branch misses, and numerical
-agreement with the scalar oracle. Only measured improvements that preserve
-goal selection and residual tolerances should become performance claims.
+Benchmarks compare identical validated inputs in scalar-single-thread and
+SIMD-single-thread modes. Required measurements include throughput, median
+latency, vector ISA, compiler flags, cache behavior, and numerical agreement
+with the scalar oracle. Only measured improvements that preserve goal
+selection and residual tolerances should become performance claims.
+
+For implementation details, see
+[the four-lane SIMD walkthrough](docs/FOUR_LANE_SIMD_WALKTHROUGH.md).
+
+## CLI
+
+Running `black-hole-sim` without arguments opens the guided interactive
+session. Scripted runs use short subcommands:
+
+```powershell
+black-hole-sim algebraic 1.98847e31 0.9
+black-hole-sim scenario .\scenarios\equatorial_penrose_reference.cfg
+black-hole-sim search .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
+black-hole-sim map .\benchmarks\penrose_phase_map_100.cfg
+```
+
+Text output is a concise six-to-eight-line summary by default. Add `--verbose`
+for geometry, integration, conservation, and search-trace diagnostics. Add
+`--format json` for a versioned machine-readable result. JSON excludes full
+trajectory point arrays but retains outcomes, residuals, timings, backend
+details, and selected parameters. Long searches report progress only on an
+interactive terminal; `--progress` and `--no-progress` override that
+behavior. Legacy flag commands remain aliases for existing scripts.
 
 ## Build And Verify
 
@@ -405,29 +428,33 @@ cmake --install build-cli --prefix .dist/black-hole-sim
 # A bare launch opens the interactive engine.
 .\.dist\black-hole-sim\bin\black-hole-sim.exe
 .\.dist\black-hole-sim\bin\black-hole-sim.exe --help
-.\.dist\black-hole-sim\bin\black-hole-sim.exe --search-penrose .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
+.\.dist\black-hole-sim\bin\black-hole-sim.exe search .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
+.\.dist\black-hole-sim\bin\black-hole-sim.exe map .\benchmarks\penrose_phase_map_100.cfg --format json --no-progress
 ```
 
 ## Docker
 
 ```powershell
 docker build -t black-hole-simulator:local .
-docker run --rm black-hole-simulator:local --algebraic 1.98847e31 0.9
+docker run --rm black-hole-simulator:local algebraic 1.98847e31 0.9
 docker pull ghcr.io/rogerrrmalcolm/energy-conversion-simulator:latest
 docker run --rm ghcr.io/rogerrrmalcolm/energy-conversion-simulator:latest `
-  --map-penrose `
-  /opt/black-hole/share/black_hole_energy_simulation/scenarios/equatorial_penrose_avx2_smoke.cfg
+  map `
+  /opt/black-hole/share/black_hole_energy_simulation/scenarios/equatorial_penrose_avx2_smoke.cfg `
+  --format json --no-progress
 ```
 
 The GitHub Actions workflow validates the image on pull requests. Pushes to
 `main` publish `latest` and commit tags to GHCR; tags such as `v0.1.0` also
 publish semantic-version tags. Every `linux/amd64` image is compiled with AVX2
 and refuses to start when the host does not expose AVX2. CI executes the
-four-lane scenario from both the test image and the published digest and
-requires a nonzero `AVX2 four-lane batches` result. The scalar executable is
-used only as an unpublished correctness oracle in the backend comparison job.
+four-lane scenario from both the test image and the published digest. It parses
+the versioned JSON result and requires a nonzero `avx2_four_lane_batches`
+value. The scalar executable is used only as an unpublished correctness oracle
+in the backend comparison job.
 
-The test suite covers algebraic limits and uncertainty, radial
-potentials, integration events and residuals, Penrose conservation and
-capture/escape, deterministic search behavior, the 25,000-node contract,
-cross-window fallback aggregation, CLI validation, and CMake package use.
+The 25-test AVX2 suite and 23-test scalar suite cover algebraic limits and
+uncertainty, radial potentials, integration events and residuals, Penrose
+conservation and capture/escape, deterministic search behavior, the 25,000-node
+contract, fallback aggregation, concise and verbose output, JSON automation,
+legacy aliases, and CMake package use.

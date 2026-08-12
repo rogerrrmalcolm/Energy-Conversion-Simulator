@@ -8,7 +8,7 @@ four-lane batch interface. On an AVX2-enabled x86-64 build, one 256-bit register
 can hold four `double` values, so the same numerical instruction can operate on
 all four candidates.
 
-This optimization applies to the exhaustive `--map-penrose` workflow. The
+This optimization applies to the exhaustive `map` workflow. The
 Dijkstra priority-queue search remains scalar because each node selected from
 the queue determines which node is expanded next.
 
@@ -146,7 +146,7 @@ Portable batch implementation:
 cmake -S . -B build-scalar -DCMAKE_BUILD_TYPE=Release -DBH_ENABLE_AVX2=OFF
 cmake --build build-scalar
 ctest --test-dir build-scalar --output-on-failure
-.\build-scalar\black-hole-sim.exe --map-penrose .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
+.\build-scalar\black-hole-sim.exe map .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
 ```
 
 AVX2 implementation on a compatible x86-64 processor:
@@ -155,7 +155,7 @@ AVX2 implementation on a compatible x86-64 processor:
 cmake -S . -B build-avx2 -DCMAKE_BUILD_TYPE=Release -DBH_ENABLE_AVX2=ON
 cmake --build build-avx2
 ctest --test-dir build-avx2 --output-on-failure
-.\build-avx2\black-hole-sim.exe --map-penrose .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
+.\build-avx2\black-hole-sim.exe map .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
 ```
 
 The CLI reports the backend, total four-lane batches, AVX2 batches, four-lane

@@ -354,6 +354,7 @@ void evaluate_scalar_lanes(
     }
 }
 
+#if defined(BH_ENABLE_AVX2)
 void assign_momentum_lanes(
     DerivativeEvaluationBatch4& result, const KerrFourMomentumBatch4& momenta,
     const KerrOrbitBatch4& orbits,
@@ -377,6 +378,7 @@ void assign_momentum_lanes(
                               momenta.coordinate_time[lane]};
     }
 }
+#endif
 
 DerivativeEvaluationBatch4 derivative_batch4(
     const KerrOrbitBatch4& orbits,

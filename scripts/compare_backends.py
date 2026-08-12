@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import math
 import os
-import re
 import statistics
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 
-FLOAT_PATTERN = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
-COUNT_LABELS = (
-    "physics invalid",
-    "captured/non-escaping",
-    "escaped below target",
-    "integration failed",
-    "goal feasible",
+STATUS_KEYS = (
+    "outside_ergosphere",
+    "physics_invalid",
+    "captured_or_non_escaping",
+    "escaping_without_target",
+    "integration_failed",
+    "goal_feasible",
 )
 
 
@@ -48,39 +48,46 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def labeled_value(output: str, label: str, value_pattern: str) -> str:
-    pattern = rf"^\s*{re.escape(label)}\s*:\s*({value_pattern})"
-    match = re.search(pattern, output, re.MULTILINE)
-    if not match:
-        raise ValueError(f"missing '{label}' in simulation output")
-    return match.group(1)
-
-
 def parse_output(output: str) -> SimulationResult:
-    parameter_text = labeled_value(output, "split parameters", r"\([^)]+\)")
-    parameters = tuple(float(value.strip()) for value in parameter_text[1:-1].split(","))
-    if len(parameters) != 3:
-        raise ValueError("expected three split parameters")
-    counts = tuple(int(labeled_value(output, label, r"\d+")) for label in COUNT_LABELS)
+    document = json.loads(output)
+    if document.get("command") != "map":
+        raise ValueError("simulation JSON is not a phase-map result")
+    diagnostics = document["diagnostics"]
+    candidate = document.get("best_candidate")
+    if candidate is None:
+        raise ValueError("phase-map JSON does not contain a best candidate")
+    split = candidate["split"]
+    counts = tuple(int(diagnostics["status_counts"][key]) for key in STATUS_KEYS)
     return SimulationResult(
-        backend=labeled_value(output, "execution backend", r"\S+"),
-        status=labeled_value(output, "status", r"\S+"),
-        nodes=int(labeled_value(output, "nodes evaluated", r"\d+")),
+        backend=str(document["execution_backend"]),
+        status=str(document["status"]),
+        nodes=int(diagnostics["nodes_evaluated"]),
         counts=counts,
-        parameters=parameters,
-        extracted_energy=float(labeled_value(output, "net extracted energy", FLOAT_PATTERN)),
-        efficiency_percent=float(labeled_value(output, "Penrose efficiency", FLOAT_PATTERN)),
-        maximum_residual=float(labeled_value(output, "maximum residual", FLOAT_PATTERN)),
-        captured_termination=labeled_value(output, "captured trajectory", r"\S+"),
-        escaping_termination=labeled_value(output, "escaping trajectory", r"\S+"),
-        avx2_batches=int(labeled_value(output, "AVX2 four-lane batches", r"\d+")),
-        elapsed_ms=float(labeled_value(output, "elapsed", FLOAT_PATTERN)),
+        parameters=(
+            float(split["split_radius_over_m"]),
+            float(split["incoming_lz_over_m_m"]),
+            float(split["split_angle_rad"]),
+        ),
+        extracted_energy=float(candidate["net_extracted_energy"]),
+        efficiency_percent=100.0 * float(candidate["penrose_efficiency"]),
+        maximum_residual=float(candidate["maximum_normalized_residual"]),
+        captured_termination=str(candidate["captured_termination"]),
+        escaping_termination=str(candidate["escaping_termination"]),
+        avx2_batches=int(diagnostics["avx2_four_lane_batches"]),
+        elapsed_ms=float(diagnostics["elapsed_ms"]),
     )
 
 
 def execute(executable: Path, scenario: Path) -> SimulationResult:
     completed = subprocess.run(
-        [str(executable.resolve()), "--map-penrose", str(scenario.resolve())],
+        [
+            str(executable.resolve()),
+            "map",
+            str(scenario.resolve()),
+            "--format",
+            "json",
+            "--no-progress",
+        ],
         check=True,
         capture_output=True,
         text=True,

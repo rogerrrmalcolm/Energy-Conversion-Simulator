@@ -413,6 +413,29 @@ Result with_elapsed(Result result, const std::chrono::steady_clock::time_point s
     return result;
 }
 
+void report_progress(const PenroseSearchProgressObserver& observer,
+                     const PenroseDijkstraSearchDiagnostics& diagnostics,
+                     const std::chrono::steady_clock::time_point start,
+                     const std::optional<double> best_eta_penrose,
+                     const bool force = false) {
+    if (!observer.callback || diagnostics.nodes_evaluated == 0) {
+        return;
+    }
+    const std::size_t interval = std::max<std::size_t>(1, observer.report_every_nodes);
+    if (!force && diagnostics.nodes_evaluated % interval != 0 &&
+        diagnostics.nodes_evaluated != diagnostics.candidates_in_domain) {
+        return;
+    }
+    try {
+        observer.callback({diagnostics.nodes_evaluated,
+                           diagnostics.candidates_in_domain,
+                           std::chrono::steady_clock::now() - start,
+                           best_eta_penrose});
+    } catch (...) {
+        // Reporting is observational; presentation failures must not alter a search.
+    }
+}
+
 PenroseDijkstraNode reconstruct_node(
     const CandidateGrid& grid, const DijkstraGridKey& key,
     const std::map<DijkstraGridKey, CompactCandidateEvaluation>& evaluations,
@@ -596,7 +619,7 @@ std::string_view penrose_search_algorithm_name(const PenroseSearchAlgorithm algo
 
 PenroseDijkstraSearchResult find_penrose_dijkstra_path(
     const EquatorialPenroseScenario& scenario, const PenroseDijkstraSearchConfig& config,
-    const std::stop_token stop_token) {
+    const std::stop_token stop_token, PenroseSearchProgressObserver progress) {
     const auto start_time = std::chrono::steady_clock::now();
     PenroseDijkstraSearchResult result;
     const CandidateGrid grid = validated_candidate_grid(scenario, config);
@@ -620,6 +643,7 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
     std::map<DijkstraGridKey, std::size_t> discovery_order;
     std::map<DijkstraGridKey, CompactCandidateEvaluation> evaluations;
     std::optional<DijkstraGridKey> best_fallback_key;
+    std::optional<double> best_eta_penrose;
     std::size_t next_discovery_order = 1;
     open.push({0, grid.start, 0});
     best_cost.emplace(grid.start, 0);
@@ -629,10 +653,12 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
     while (!open.empty()) {
         if (stop_token.stop_requested()) {
             result.status = PenroseDijkstraSearchStatus::cancelled;
+            report_progress(progress, result.diagnostics, start_time, best_eta_penrose, true);
             return with_elapsed(std::move(result), start_time);
         }
         if (time_budget_exhausted(start_time, config)) {
             result.status = PenroseDijkstraSearchStatus::time_budget_exhausted;
+            report_progress(progress, result.diagnostics, start_time, best_eta_penrose, true);
             return with_elapsed(std::move(result), start_time);
         }
 
@@ -646,8 +672,10 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
         if (evaluation == evaluations.end()) {
             if (result.diagnostics.nodes_evaluated >= config.max_evaluations) {
                 result.status = PenroseDijkstraSearchStatus::node_budget_exhausted;
+                report_progress(progress, result.diagnostics, start_time, best_eta_penrose, true);
                 return with_elapsed(std::move(result), start_time);
             }
+            bool evaluated_new_candidate = false;
             try {
                 const PenroseEventResult event =
                     evaluate_equatorial_penrose_event(scenario, split_at(grid, current.key));
@@ -658,6 +686,11 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
                 ++result.diagnostics.nodes_evaluated;
                 ++result.diagnostics.scalar_nodes;
                 record_status(result.diagnostics, evaluation->second.status);
+                if (has_validated_positive_extraction(event, scenario)) {
+                    if (!best_eta_penrose || event.eta_penrose > *best_eta_penrose) {
+                        best_eta_penrose = event.eta_penrose;
+                    }
+                }
                 if (has_validated_positive_extraction(event, scenario) &&
                     evaluation->second.status ==
                         PenroseDijkstraNodeStatus::escaping_without_target &&
@@ -668,10 +701,15 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
                                      *best_fallback_key))) {
                     best_fallback_key = current.key;
                 }
+                evaluated_new_candidate = true;
             } catch (const std::exception& error) {
                 result.status = PenroseDijkstraSearchStatus::evaluation_failure;
                 result.failure_message = "candidate evaluator threw: " + std::string(error.what());
+                report_progress(progress, result.diagnostics, start_time, best_eta_penrose, true);
                 return with_elapsed(std::move(result), start_time);
+            }
+            if (evaluated_new_candidate) {
+                report_progress(progress, result.diagnostics, start_time, best_eta_penrose);
             }
         }
 
@@ -702,6 +740,7 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
             result.selected_event = std::move(fresh_goal);
             result.parameter_adjustment_path = reconstruct_path(
                 grid, current.key, evaluations, best_cost, discovery_order, parent);
+            report_progress(progress, result.diagnostics, start_time, best_eta_penrose, true);
             return with_elapsed(std::move(result), start_time);
         }
 
@@ -734,6 +773,7 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
 
     if (!best_fallback_key) {
         result.status = PenroseDijkstraSearchStatus::no_solution_within_bounds;
+        report_progress(progress, result.diagnostics, start_time, best_eta_penrose, true);
         return with_elapsed(std::move(result), start_time);
     }
 
@@ -765,12 +805,13 @@ PenroseDijkstraSearchResult find_penrose_dijkstra_path(
     result.selected_event = std::move(fresh_fallback);
     result.parameter_adjustment_path = reconstruct_path(
         grid, *best_fallback_key, evaluations, best_cost, discovery_order, parent);
+    report_progress(progress, result.diagnostics, start_time, best_eta_penrose, true);
     return with_elapsed(std::move(result), start_time);
 }
 
 PenrosePhaseMapResult evaluate_penrose_phase_map(
     const EquatorialPenroseScenario& scenario, const PenroseDijkstraSearchConfig& config,
-    const std::stop_token stop_token) {
+    const std::stop_token stop_token, PenroseSearchProgressObserver progress) {
     const auto start_time = std::chrono::steady_clock::now();
     PenrosePhaseMapResult result;
     const CandidateGrid grid = validated_candidate_grid(scenario, config);
@@ -794,6 +835,11 @@ PenrosePhaseMapResult evaluate_penrose_phase_map(
             result.best_validated_candidate = node;
         }
         result.candidates.push_back(std::move(node));
+        const std::optional<double> best_eta = result.best_validated_candidate
+                                                   ? std::optional<double>{
+                                                         result.best_validated_candidate->eta_penrose}
+                                                   : std::nullopt;
+        report_progress(progress, result.diagnostics, start_time, best_eta);
     };
 
     const std::size_t angle_count =
@@ -807,14 +853,32 @@ PenrosePhaseMapResult evaluate_penrose_phase_map(
             while (angle_index < angle_count) {
                 if (stop_token.stop_requested()) {
                     result.status = PenrosePhaseMapStatus::cancelled;
+                    report_progress(
+                        progress, result.diagnostics, start_time,
+                        result.best_validated_candidate
+                            ? std::optional<double>{result.best_validated_candidate->eta_penrose}
+                            : std::nullopt,
+                        true);
                     return with_elapsed(std::move(result), start_time);
                 }
                 if (time_budget_exhausted(start_time, config)) {
                     result.status = PenrosePhaseMapStatus::time_budget_exhausted;
+                    report_progress(
+                        progress, result.diagnostics, start_time,
+                        result.best_validated_candidate
+                            ? std::optional<double>{result.best_validated_candidate->eta_penrose}
+                            : std::nullopt,
+                        true);
                     return with_elapsed(std::move(result), start_time);
                 }
                 if (result.diagnostics.nodes_evaluated >= config.max_evaluations) {
                     result.status = PenrosePhaseMapStatus::node_budget_exhausted;
+                    report_progress(
+                        progress, result.diagnostics, start_time,
+                        result.best_validated_candidate
+                            ? std::optional<double>{result.best_validated_candidate->eta_penrose}
+                            : std::nullopt,
+                        true);
                     return with_elapsed(std::move(result), start_time);
                 }
 
@@ -860,18 +924,24 @@ PenrosePhaseMapResult evaluate_penrose_phase_map(
                     static_cast<int>(radius_index),
                     static_cast<int>(angular_momentum_index),
                     static_cast<int>(angle_index)};
+                PenroseEventResult event;
                 try {
-                    const PenroseEventResult event =
-                        evaluate_equatorial_penrose_event(
-                            scenario, split_at(grid, key));
-                    ++result.diagnostics.scalar_nodes;
-                    retain_candidate(key, event);
+                    event = evaluate_equatorial_penrose_event(
+                        scenario, split_at(grid, key));
                 } catch (const std::exception& error) {
                     result.status = PenrosePhaseMapStatus::evaluation_failure;
                     result.failure_message =
                         "candidate evaluator threw: " + std::string(error.what());
+                    report_progress(
+                        progress, result.diagnostics, start_time,
+                        result.best_validated_candidate
+                            ? std::optional<double>{result.best_validated_candidate->eta_penrose}
+                            : std::nullopt,
+                        true);
                     return with_elapsed(std::move(result), start_time);
                 }
+                ++result.diagnostics.scalar_nodes;
+                retain_candidate(key, event);
                 ++angle_index;
             }
         }
@@ -879,6 +949,12 @@ PenrosePhaseMapResult evaluate_penrose_phase_map(
 
     result.complete = true;
     result.status = PenrosePhaseMapStatus::completed;
+    report_progress(
+        progress, result.diagnostics, start_time,
+        result.best_validated_candidate
+            ? std::optional<double>{result.best_validated_candidate->eta_penrose}
+            : std::nullopt,
+        true);
     if (!result.best_validated_candidate) {
         return with_elapsed(std::move(result), start_time);
     }

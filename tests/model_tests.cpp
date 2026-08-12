@@ -14,6 +14,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 int failures = 0;
@@ -658,6 +659,20 @@ int main() {
               repeated_penrose_search.parameter_adjustment_path.back().key ==
                   penrose_search.parameter_adjustment_path.back().key,
           "Penrose Dijkstra repeats the same deterministic search outcome and trace");
+    std::vector<bh::PenroseSearchProgress> dijkstra_progress;
+    const auto observed_penrose_search = bh::find_penrose_dijkstra_path(
+        loaded_search.scenario, loaded_search.search, {},
+        {1, [&](const bh::PenroseSearchProgress& progress) {
+             dijkstra_progress.push_back(progress);
+         }});
+    check(!dijkstra_progress.empty() &&
+              dijkstra_progress.back().nodes_evaluated ==
+                  observed_penrose_search.diagnostics.nodes_evaluated &&
+              dijkstra_progress.back().best_eta_penrose &&
+              observed_penrose_search.status == penrose_search.status &&
+              observed_penrose_search.parameter_adjustment_path.back().key ==
+                  penrose_search.parameter_adjustment_path.back().key,
+          "Dijkstra progress reports aggregate state without changing traversal outcome");
 
     auto start_goal_search = loaded_search.search;
     start_goal_search.start = {1.10, 2.07, -2.0};
@@ -808,6 +823,20 @@ int main() {
               four_angle_phase_map.diagnostics.avx2_four_lane_batches ==
                   (bh::penrose_batch4_uses_avx2() ? 1U : 0U),
           "phase map dispatches four adjacent angle states through one batch");
+    std::vector<bh::PenroseSearchProgress> phase_map_progress;
+    const auto observed_four_angle_phase_map = bh::evaluate_penrose_phase_map(
+        loaded_search.scenario, four_angle_phase_map_search, {},
+        {1, [&](const bh::PenroseSearchProgress& progress) {
+             phase_map_progress.push_back(progress);
+         }});
+    check(!phase_map_progress.empty() &&
+              phase_map_progress.back().nodes_evaluated == 4 &&
+              phase_map_progress.back().candidates_in_domain == 4 &&
+              observed_four_angle_phase_map.best_validated_candidate &&
+              four_angle_phase_map.best_validated_candidate &&
+              observed_four_angle_phase_map.best_validated_candidate->key ==
+                  four_angle_phase_map.best_validated_candidate->key,
+          "phase-map progress reports aggregate state without changing selection");
     for (std::size_t lane = 0; lane < bh::avx2_double_lanes; ++lane) {
         check(four_angle_phase_map.candidates[lane].key ==
                   bh::DijkstraGridKey{0, 0, static_cast<int>(lane)},

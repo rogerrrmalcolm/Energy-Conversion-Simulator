@@ -5,26 +5,240 @@
 #include "bh/penrose_scenario_io.hpp"
 #include "bh/plasma_model.hpp"
 #include "bh/trajectory.hpp"
+#include "cli_json.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
+
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 #ifndef BH_VERSION
 #define BH_VERSION "development"
 #endif
 
 namespace {
+enum class OutputFormat {
+    text,
+    json
+};
+
+enum class ProgressMode {
+    automatic,
+    always,
+    never
+};
+
+struct CliOptions {
+    OutputFormat format{OutputFormat::text};
+    ProgressMode progress{ProgressMode::automatic};
+    bool verbose{};
+};
+
+struct ParsedCli {
+    std::string_view command{"interactive"};
+    std::vector<std::string_view> arguments;
+    CliOptions options{};
+};
+
+OutputFormat parse_output_format(const std::string_view value) {
+    if (value == "text") {
+        return OutputFormat::text;
+    }
+    if (value == "json") {
+        return OutputFormat::json;
+    }
+    throw std::invalid_argument("--format must be text or json");
+}
+
+std::string_view normalize_command(const std::string_view command) {
+    if (command == "--algebraic") {
+        return "algebraic";
+    }
+    if (command == "--algebraic-range") {
+        return "algebraic-range";
+    }
+    if (command == "--toy-plasma") {
+        return "toy-plasma";
+    }
+    if (command == "--scenario") {
+        return "scenario";
+    }
+    if (command == "--search-penrose") {
+        return "search";
+    }
+    if (command == "--map-penrose") {
+        return "map";
+    }
+    if (command == "--interactive") {
+        return "interactive";
+    }
+    if (command == "--version") {
+        return "version";
+    }
+    if (command == "--help" || command == "-h") {
+        return "help";
+    }
+    return command;
+}
+
+ParsedCli parse_cli(const int argc, char* argv[]) {
+    ParsedCli parsed;
+    bool has_command = false;
+    for (int index = 1; index < argc; ++index) {
+        const std::string_view token = argv[index];
+        if (token == "--verbose") {
+            parsed.options.verbose = true;
+            continue;
+        }
+        if (token == "--summary") {
+            parsed.options.verbose = false;
+            continue;
+        }
+        if (token == "--progress") {
+            parsed.options.progress = ProgressMode::always;
+            continue;
+        }
+        if (token == "--no-progress") {
+            parsed.options.progress = ProgressMode::never;
+            continue;
+        }
+        if (token == "--format") {
+            if (++index >= argc) {
+                throw std::invalid_argument("--format requires text or json");
+            }
+            parsed.options.format = parse_output_format(argv[index]);
+            continue;
+        }
+        if (token.starts_with("--format=")) {
+            parsed.options.format =
+                parse_output_format(token.substr(std::string_view("--format=").size()));
+            continue;
+        }
+
+        if (!has_command) {
+            parsed.command = normalize_command(token);
+            has_command = true;
+        } else {
+            parsed.arguments.push_back(token);
+        }
+    }
+    return parsed;
+}
+
 double evaluated_nodes_per_second(const bh::PenroseDijkstraSearchDiagnostics& diagnostics) {
     const double seconds = std::chrono::duration<double>(diagnostics.elapsed).count();
     return seconds > 0.0 ? static_cast<double>(diagnostics.nodes_evaluated) / seconds : 0.0;
+}
+
+bool standard_error_is_terminal() {
+#if defined(_WIN32)
+    return _isatty(_fileno(stderr)) != 0;
+#else
+    return isatty(fileno(stderr)) != 0;
+#endif
+}
+
+bool running_in_ci() {
+    const char* const value = std::getenv("CI");
+    return value != nullptr && std::string_view(value) != "" &&
+           std::string_view(value) != "false";
+}
+
+bool should_report_progress(const CliOptions& options) {
+    if (options.progress == ProgressMode::always) {
+        return true;
+    }
+    if (options.progress == ProgressMode::never) {
+        return false;
+    }
+    return options.format == OutputFormat::text && !running_in_ci() &&
+           standard_error_is_terminal();
+}
+
+class TerminalProgress {
+public:
+    void update(const bh::PenroseSearchProgress& progress) {
+        if (last_nodes_ && *last_nodes_ == progress.nodes_evaluated) {
+            return;
+        }
+        last_nodes_ = progress.nodes_evaluated;
+        const double percent = progress.candidates_in_domain == 0
+                                   ? 0.0
+                                   : 100.0 * static_cast<double>(progress.nodes_evaluated) /
+                                         static_cast<double>(progress.candidates_in_domain);
+        const double seconds = std::chrono::duration<double>(progress.elapsed).count();
+        const double nodes_per_second =
+            seconds > 0.0 ? static_cast<double>(progress.nodes_evaluated) / seconds : 0.0;
+
+        std::ostringstream line;
+        line << "Progress: " << progress.nodes_evaluated << "/"
+             << progress.candidates_in_domain << " (" << std::fixed << std::setprecision(1)
+             << percent << "%) | " << std::setprecision(2) << nodes_per_second << " nodes/s"
+             << " | best ";
+        if (progress.best_eta_penrose) {
+            line << std::setprecision(4) << 100.0 * *progress.best_eta_penrose << "%";
+        } else {
+            line << "n/a";
+        }
+
+        const std::string text = line.str();
+        std::cerr << '\r' << text;
+        if (text.size() < previous_width_) {
+            std::cerr << std::string(previous_width_ - text.size(), ' ');
+        }
+        std::cerr << std::flush;
+        previous_width_ = text.size();
+        active_ = true;
+    }
+
+    void finish() {
+        if (active_) {
+            std::cerr << '\n';
+            active_ = false;
+            previous_width_ = 0;
+            last_nodes_.reset();
+        }
+    }
+
+    ~TerminalProgress() {
+        finish();
+    }
+
+private:
+    std::size_t previous_width_{};
+    bool active_{};
+    std::optional<std::size_t> last_nodes_{};
+};
+
+bh::PenroseSearchProgressObserver make_progress_observer(
+    const std::size_t candidates, const CliOptions& options, TerminalProgress& display) {
+    if (!should_report_progress(options)) {
+        return {};
+    }
+    bh::PenroseSearchProgressObserver observer;
+    observer.report_every_nodes = std::max<std::size_t>(10, candidates / 100);
+    observer.callback = [&display](const bh::PenroseSearchProgress& progress) {
+        display.update(progress);
+    };
+    return observer;
 }
 
 double parse_double(const std::string_view text, const std::string_view argument_name) {
@@ -137,29 +351,31 @@ void print_integration_diagnostics(const std::string_view label,
     }
 }
 
-void print_usage(const std::string_view program_name) {
+void print_usage() {
     std::cout << "Usage:\n"
-              << "  " << program_name << "\n"
-              << "  " << program_name << " --algebraic <mass_kg> <a_star>\n"
-              << "  " << program_name
-              << " --algebraic-range <mass_low_kg> <mass_mid_kg> <mass_high_kg>"
+              << "  black-hole-sim\n"
+              << "  black-hole-sim algebraic <mass_kg> <a_star>\n"
+              << "  black-hole-sim algebraic-range <mass_low_kg> <mass_mid_kg> <mass_high_kg>"
                  " <spin_low> <spin_mid> <spin_high>\n"
-              << "  " << program_name
-              << " --toy-plasma <magnetic_field_tesla> <mass_density_kg_m3> <flow_area_m2>"
+              << "  black-hole-sim toy-plasma <magnetic_field_tesla> <mass_density_kg_m3>"
+                 " <flow_area_m2>"
                  " <a_star> <duration_seconds>\n"
-              << "  " << program_name << " --scenario <path-to-event.cfg>\n"
-              << "  " << program_name << " --search-penrose <path-to-search.cfg>\n"
-              << "  " << program_name << " --map-penrose <path-to-search.cfg>\n"
-              << "  " << program_name << " --interactive\n"
-              << "  " << program_name << " --version\n\n"
+              << "  black-hole-sim scenario <event.cfg>\n"
+              << "  black-hole-sim search <search.cfg>\n"
+              << "  black-hole-sim map <search.cfg>\n"
+              << "  black-hole-sim interactive\n"
+              << "  black-hole-sim version\n\n"
+        << "Output options:\n"
+        << "  --summary          Print the concise result summary (default)\n"
+        << "  --verbose          Include full physics and integration diagnostics\n"
+        << "  --format text|json Select human-readable or structured output\n"
+        << "  --progress         Show search progress even when output is redirected\n"
+        << "  --no-progress      Disable search progress\n\n"
               << "Running without arguments opens the interactive engine.\n"
-              << "The scenario command evaluates one declared equatorial Penrose event."
-                 " It does not search or optimize parameters.\n"
-              << "The search-penrose command runs Dijkstra over a declared bounded parameter"
-                 " grid and calls the Penrose evaluator for each candidate. CLI search windows"
-                 " are limited to 25000 nodes and cannot use a partial node or time budget.\n"
-              << "The map-penrose command exhaustively evaluates the declared bounded grid"
-                 " and reports the greatest validated extraction found within that grid.\n"
+              << "Legacy --algebraic, --scenario, --search-penrose, and --map-penrose flags"
+                 " remain supported.\n"
+              << "Search runs Dijkstra over at most 25000 parameter nodes. Map evaluates every"
+                 " node and reports the greatest validated extraction in that bounded grid.\n"
               << "The toy-plasma command is a reduced, ideal-MHD-inspired transport scaling,"
                  " not an MHD or GRMHD simulation.\n"
               << "The interactive command opens a shared session and retains black-hole state"
@@ -170,15 +386,23 @@ void print_version() {
     std::cout << "black-hole-sim " << BH_VERSION << '\n';
 }
 
-void print_algebraic_result(const bh::RotationalEnergyResult& result) {
+void print_algebraic_result(const bh::RotationalEnergyResult& result,
+                            const bool verbose) {
     std::cout << "Algebraic Kerr rotational-energy reservoir\n"
               << "  total mass-energy:       " << result.mass_energy_joules << " J\n"
               << "  irreducible mass:        " << result.irreducible_mass_kg << " kg\n"
               << "  rotational reservoir:    " << result.rotational_energy_joules << " J\n"
               << "  rotational fraction:     " << 100.0 * result.rotational_fraction << " %\n";
+    if (verbose) {
+        std::cout << "  irreducible fraction:    "
+                  << 100.0 * result.irreducible_mass_fraction << " %\n"
+                  << "  dE_rot / da_star:        "
+                  << result.d_rotational_energy_d_spin_joules << " J\n";
+    }
 }
 
-void print_algebraic_range_result(const bh::RotationalEnergyRangeResult& result) {
+void print_algebraic_range_result(const bh::RotationalEnergyRangeResult& result,
+                                  const bool verbose) {
     std::cout << "Algebraic Kerr rotational-energy range\n";
     std::cout << "  lower reservoir:         " << result.lower.rotational_energy_joules << " J\n";
     std::cout << "  central reservoir:       " << result.central.rotational_energy_joules
@@ -188,9 +412,28 @@ void print_algebraic_range_result(const bh::RotationalEnergyRangeResult& result)
               << " J\n";
     std::cout << "  upper uncertainty:       +" << result.rotational_energy_uncertainty_plus_joules
               << " J\n";
+    if (verbose) {
+        std::cout << "  lower rotational fraction:   "
+                  << 100.0 * result.lower.rotational_fraction << " %\n"
+                  << "  central rotational fraction: "
+                  << 100.0 * result.central.rotational_fraction << " %\n"
+                  << "  upper rotational fraction:   "
+                  << 100.0 * result.upper.rotational_fraction << " %\n";
+    }
 }
 
-void print_toy_plasma_result(const bh::PlasmaResult& result) {
+void print_toy_plasma_result(const bh::PlasmaResult& result,
+                             const bool verbose) {
+    if (!verbose) {
+        std::cout << "Reduced toy-plasma transport estimate\n"
+                  << "  magnetization sigma:           " << result.magnetization << "\n"
+                  << "  outward electromagnetic power: "
+                  << result.outward_electromagnetic_power_watts << " W\n"
+                  << "  outward electromagnetic energy: "
+                  << result.outward_electromagnetic_energy_joules << " J\n"
+                  << "  model scope: educational 0-D scaling, not MHD or GRMHD\n";
+        return;
+    }
     std::cout << "Reduced toy-plasma transport estimate\n"
               << "  model: 0-D ideal-MHD-inspired scaling, not an MHD solution or GRMHD\n"
               << "  magnetization sigma:                 " << result.magnetization << "\n"
@@ -209,7 +452,24 @@ void print_toy_plasma_result(const bh::PlasmaResult& result) {
 }
 
 void print_penrose_event_result(const bh::EquatorialPenroseScenario& scenario,
-                                const bh::PenroseEventResult& result) {
+                                const bh::PenroseEventResult& result,
+                                const bool verbose) {
+    if (!verbose) {
+        std::cout << "Idealized equatorial Penrose event\n"
+                  << "  status: "
+                  << bh::penrose_event_status_name(result.status) << "\n"
+                  << "  split (r/M, Lz, angle):    (" << result.split.split_radius_over_m << ", "
+                  << result.split.incoming_lz_over_m_m << ", "
+                  << result.split.split_angle_rad << ")\n"
+                  << "  extraction / efficiency:  " << result.extracted_energy << " / "
+                  << 100.0 * result.eta_penrose << " %\n"
+                  << "  captured / escaping:      "
+                  << termination_name(result.captured_trajectory.termination) << " / "
+                  << termination_name(result.escaping_trajectory.termination) << "\n"
+                  << "  maximum residual:         "
+                  << result.maximum_normalized_residual << "\n";
+        return;
+    }
     std::cout << "Restricted equatorial Penrose event\n"
               << "  model: neutral test particle, local two-body split, G = c = 1\n"
               << "  status: " << bh::penrose_event_status_name(result.status) << "\n\n"
@@ -268,9 +528,45 @@ void print_new_parameter_window_guidance(
 }
 
 void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& input,
-                                   const bh::PenroseDijkstraSearchResult& result) {
+                                   const bh::PenroseDijkstraSearchResult& result,
+                                   const bool verbose) {
     const bh::PenroseDijkstraSearchConfig& search = input.search;
     const bh::PenroseDijkstraSearchDiagnostics& diagnostics = result.diagnostics;
+    if (!verbose) {
+        std::cout << "Dijkstra Penrose search\n"
+                  << "  status:                    "
+                  << bh::penrose_dijkstra_search_status_name(result.status) << "\n"
+                  << "  work:                      " << diagnostics.nodes_evaluated << "/"
+                  << diagnostics.candidates_in_domain << " nodes, "
+                  << evaluated_nodes_per_second(diagnostics) << " nodes/s\n";
+        if (!result.failure_message.empty()) {
+            std::cout << "  detail:                    " << result.failure_message << "\n";
+        }
+        if (result.found && !result.parameter_adjustment_path.empty()) {
+            const bh::PenroseDijkstraNode& selected = result.parameter_adjustment_path.back();
+            std::cout << "  target / result:           " << 100.0 * search.eta_target
+                      << " % / " << 100.0 * selected.eta_penrose << " %"
+                      << (result.target_reached ? "\n" : " (bounded fallback)\n")
+                      << "  adjustment cost:           " << selected.g_cost << "\n"
+                      << "  split (r/M, Lz, angle):     ("
+                      << selected.split.split_radius_over_m << ", "
+                      << selected.split.incoming_lz_over_m_m << ", "
+                      << selected.split.split_angle_rad << ")\n"
+                      << "  captured / escaping:       "
+                      << termination_name(selected.captured_termination) << " / "
+                      << termination_name(selected.escaping_termination) << "\n"
+                      << "  maximum residual:          "
+                      << selected.maximum_normalized_residual << "\n";
+        }
+        if (result.status == bh::PenroseDijkstraSearchStatus::best_feasible_below_target) {
+            std::cout << "  note: target not reached; showing the best validated candidate"
+                         " in this grid\n";
+        } else if (result.status ==
+                   bh::PenroseDijkstraSearchStatus::no_solution_within_bounds) {
+            std::cout << "  note: no positive, physically validated extraction in this grid\n";
+        }
+        return;
+    }
     std::cout << "Dijkstra Penrose parameter search\n"
               << "  model: bounded parameter graph; each node calls the restricted"
                  " equatorial Penrose evaluator\n"
@@ -377,11 +673,12 @@ void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& inp
         print_new_parameter_window_guidance(search);
     }
     std::cout << "\nPhysical selected-event diagnostics\n";
-    print_penrose_event_result(input.scenario, result.selected_event);
+    print_penrose_event_result(input.scenario, result.selected_event, true);
 }
 
 void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& input,
-                                     const bh::PenrosePhaseMapResult& result) {
+                                     const bh::PenrosePhaseMapResult& result,
+                                     const bool verbose) {
     const bh::PenroseDijkstraSearchConfig& search = input.search;
     const bh::PenroseDijkstraSearchDiagnostics& diagnostics = result.diagnostics;
     const std::string_view execution_backend =
@@ -390,6 +687,41 @@ void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& in
             : diagnostics.four_lane_batches > 0
                   ? "portable-scalar-batch4-single-thread"
                   : "scalar-single-thread";
+    if (!verbose) {
+        std::cout << "Bounded Penrose phase-space map\n"
+                  << "  status / backend:         "
+                  << bh::penrose_phase_map_status_name(result.status) << " / "
+                  << execution_backend << "\n"
+                  << "  work:                     " << diagnostics.nodes_evaluated << "/"
+                  << diagnostics.candidates_in_domain << " nodes, "
+                  << evaluated_nodes_per_second(diagnostics) << " nodes/s\n"
+                  << "  AVX2 batches:             "
+                  << diagnostics.avx2_four_lane_batches << "\n";
+        if (!result.failure_message.empty()) {
+            std::cout << "  detail:                   " << result.failure_message << "\n";
+        }
+        if (result.best_validated_candidate) {
+            const bh::PenroseDijkstraNode& best = *result.best_validated_candidate;
+            std::cout << "  target / best:            " << 100.0 * search.eta_target
+                      << " % / " << 100.0 * best.eta_penrose << " %\n"
+                      << "  split (r/M, Lz, angle):   (" << best.split.split_radius_over_m << ", "
+                      << best.split.incoming_lz_over_m_m << ", "
+                      << best.split.split_angle_rad << ")\n"
+                      << "  maximum residual:         "
+                      << best.maximum_normalized_residual << "\n";
+        } else {
+            std::cout << "  best validated candidate: none\n";
+        }
+        if (result.complete && diagnostics.goal_feasible == 0) {
+            if (result.best_validated_candidate) {
+                std::cout << "  note: target not reached; showing the best validated candidate"
+                             " in this grid\n";
+            } else {
+                std::cout << "  note: no positive, physically validated extraction in this grid\n";
+            }
+        }
+        return;
+    }
     std::cout << "Bounded Penrose phase-space map\n"
               << "  model: four-lane exhaustive evaluation of the declared parameter grid\n"
               << "  execution backend: " << execution_backend << "\n"
@@ -462,85 +794,128 @@ void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& in
     }
 
     std::cout << "\nPhysical best-event diagnostics\n";
-    print_penrose_event_result(input.scenario, result.best_event);
+    print_penrose_event_result(input.scenario, result.best_event, true);
 }
 
-void run_algebraic(const int argc, char* argv[]) {
-    if (argc != 4) {
-        throw std::invalid_argument("--algebraic requires <mass_kg> <a_star>");
+void run_algebraic(const std::span<const std::string_view> arguments,
+                   const CliOptions& options) {
+    if (arguments.size() != 2) {
+        throw std::invalid_argument("algebraic requires <mass_kg> <a_star>");
     }
-    print_algebraic_result(
-        bh::rotational_energy(parse_double(argv[2], "mass_kg"), parse_double(argv[3], "a_star")));
+    const bh::RotationalEnergyResult result = bh::rotational_energy(
+        parse_double(arguments[0], "mass_kg"), parse_double(arguments[1], "a_star"));
+    if (options.format == OutputFormat::json) {
+        bh::cli_json::write_algebraic(std::cout, result);
+    } else {
+        print_algebraic_result(result, options.verbose);
+    }
 }
 
-void run_algebraic_range(const int argc, char* argv[]) {
-    if (argc != 8) {
+void run_algebraic_range(const std::span<const std::string_view> arguments,
+                         const CliOptions& options) {
+    if (arguments.size() != 6) {
         throw std::invalid_argument(
-            "--algebraic-range requires three mass values followed by three spin values");
+            "algebraic-range requires three mass values followed by three spin values");
     }
 
     const bh::RotationalEnergyRangeResult result = bh::rotational_energy_range(
-        {{parse_double(argv[2], "mass_low_kg"), parse_double(argv[3], "mass_mid_kg"),
-          parse_double(argv[4], "mass_high_kg")},
-         {parse_double(argv[5], "spin_low"), parse_double(argv[6], "spin_mid"),
-          parse_double(argv[7], "spin_high")}});
-    print_algebraic_range_result(result);
+        {{parse_double(arguments[0], "mass_low_kg"),
+          parse_double(arguments[1], "mass_mid_kg"),
+          parse_double(arguments[2], "mass_high_kg")},
+         {parse_double(arguments[3], "spin_low"),
+          parse_double(arguments[4], "spin_mid"),
+          parse_double(arguments[5], "spin_high")}});
+    if (options.format == OutputFormat::json) {
+        bh::cli_json::write_algebraic_range(std::cout, result);
+    } else {
+        print_algebraic_range_result(result, options.verbose);
+    }
 }
 
-void run_toy_plasma(const int argc, char* argv[]) {
-    if (argc != 7) {
+void run_toy_plasma(const std::span<const std::string_view> arguments,
+                    const CliOptions& options) {
+    if (arguments.size() != 5) {
         throw std::invalid_argument(
-            "--toy-plasma requires <magnetic_field_tesla> <mass_density_kg_m3> <flow_area_m2>"
+            "toy-plasma requires <magnetic_field_tesla> <mass_density_kg_m3> <flow_area_m2>"
             " <a_star> <duration_seconds>");
     }
 
     const bh::PlasmaInput input{
-        parse_double(argv[2], "magnetic_field_tesla"),
-        parse_double(argv[3], "mass_density_kg_m3"),
-        parse_double(argv[4], "flow_area_m2"),
-        parse_double(argv[5], "a_star"),
-        parse_double(argv[6], "duration_seconds")};
+        parse_double(arguments[0], "magnetic_field_tesla"),
+        parse_double(arguments[1], "mass_density_kg_m3"),
+        parse_double(arguments[2], "flow_area_m2"),
+        parse_double(arguments[3], "a_star"),
+        parse_double(arguments[4], "duration_seconds")};
     const bh::PlasmaResult result = bh::estimate_toy_plasma_transport(input);
 
-    print_toy_plasma_result(result);
+    if (options.format == OutputFormat::json) {
+        bh::cli_json::write_toy_plasma(std::cout, input, result);
+    } else {
+        print_toy_plasma_result(result, options.verbose);
+    }
 }
 
-void run_penrose_event(const int argc, char* argv[]) {
-    if (argc != 3) {
-        throw std::invalid_argument("--scenario requires a path to a .cfg scenario file");
+void run_penrose_event(const std::span<const std::string_view> arguments,
+                       const CliOptions& options) {
+    if (arguments.size() != 1) {
+        throw std::invalid_argument("scenario requires a path to a .cfg scenario file");
     }
 
     const bh::EquatorialPenroseEventInput input =
-        bh::load_equatorial_penrose_event_input(argv[2]);
+        bh::load_equatorial_penrose_event_input(std::string(arguments[0]));
     const bh::PenroseEventResult result =
         bh::evaluate_equatorial_penrose_event(input.scenario, input.split);
-    print_penrose_event_result(input.scenario, result);
+    if (options.format == OutputFormat::json) {
+        bh::cli_json::write_penrose_event(std::cout, input.scenario, result);
+    } else {
+        print_penrose_event_result(input.scenario, result, options.verbose);
+    }
 }
 
-void run_penrose_dijkstra(const int argc, char* argv[]) {
-    if (argc != 3) {
-        throw std::invalid_argument("--search-penrose requires a path to a .cfg search scenario");
+void run_penrose_dijkstra(const std::span<const std::string_view> arguments,
+                          const CliOptions& options) {
+    if (arguments.size() != 1) {
+        throw std::invalid_argument("search requires a path to a .cfg search scenario");
     }
 
     const bh::EquatorialPenroseDijkstraInput input =
-        bh::load_equatorial_penrose_dijkstra_input(argv[2]);
+        bh::load_equatorial_penrose_dijkstra_input(std::string(arguments[0]));
     bh::require_complete_penrose_search_window(input.scenario, input.search);
-    const bh::PenroseDijkstraSearchResult result =
-        bh::find_penrose_dijkstra_path(input.scenario, input.search);
-    print_penrose_dijkstra_result(input, result);
+    const bh::PenroseSearchWindowSummary window =
+        bh::describe_penrose_search_window(input.scenario, input.search);
+    TerminalProgress display;
+    const bh::PenroseDijkstraSearchResult result = bh::find_penrose_dijkstra_path(
+        input.scenario, input.search, {},
+        make_progress_observer(window.candidates, options, display));
+    display.finish();
+    if (options.format == OutputFormat::json) {
+        bh::cli_json::write_penrose_search(std::cout, input, result);
+    } else {
+        print_penrose_dijkstra_result(input, result, options.verbose);
+    }
 }
 
-void run_penrose_phase_map(const int argc, char* argv[]) {
-    if (argc != 3) {
-        throw std::invalid_argument("--map-penrose requires a path to a .cfg search scenario");
+void run_penrose_phase_map(const std::span<const std::string_view> arguments,
+                           const CliOptions& options) {
+    if (arguments.size() != 1) {
+        throw std::invalid_argument("map requires a path to a .cfg search scenario");
     }
 
     const bh::EquatorialPenroseDijkstraInput input =
-        bh::load_equatorial_penrose_dijkstra_input(argv[2]);
+        bh::load_equatorial_penrose_dijkstra_input(std::string(arguments[0]));
     bh::require_complete_penrose_search_window(input.scenario, input.search);
-    const bh::PenrosePhaseMapResult result =
-        bh::evaluate_penrose_phase_map(input.scenario, input.search);
-    print_penrose_phase_map_result(input, result);
+    const bh::PenroseSearchWindowSummary window =
+        bh::describe_penrose_search_window(input.scenario, input.search);
+    TerminalProgress display;
+    const bh::PenrosePhaseMapResult result = bh::evaluate_penrose_phase_map(
+        input.scenario, input.search, {},
+        make_progress_observer(window.candidates, options, display));
+    display.finish();
+    if (options.format == OutputFormat::json) {
+        bh::cli_json::write_penrose_phase_map(std::cout, input, result);
+    } else {
+        print_penrose_phase_map_result(input, result, options.verbose);
+    }
 }
 
 constexpr double normalized_kerr_mass = 1.0;
@@ -772,10 +1147,11 @@ void print_shared_session_header(const InteractiveSession& session) {
               << "  Kerr/Penrose mass scale:  M = 1 (radii and angular momentum normalized by M)\n";
 }
 
-void run_interactive_algebraic(const InteractiveSession& session) {
+void run_interactive_algebraic(const InteractiveSession& session, const bool verbose) {
     std::cout << "\nAlgebraic Kerr reservoir using the shared black-hole state\n";
     print_algebraic_result(
-        bh::rotational_energy(session.black_hole.mass_kg, session.black_hole.dimensionless_spin));
+        bh::rotational_energy(session.black_hole.mass_kg, session.black_hole.dimensionless_spin),
+        verbose);
 }
 
 void run_interactive_kerr(InteractiveSession& session) {
@@ -814,7 +1190,7 @@ void run_interactive_kerr(InteractiveSession& session) {
     print_integration_diagnostics("trajectory", trajectory);
 }
 
-void run_interactive_penrose(InteractiveSession& session) {
+void run_interactive_penrose(InteractiveSession& session, const bool verbose) {
     std::cout << "\nRestricted equatorial Penrose event input\n"
               << "  The shared black-hole mass and spin are already loaded.\n"
               << "  Enter only particle, split, and event-boundary parameters.\n";
@@ -831,10 +1207,11 @@ void run_interactive_penrose(InteractiveSession& session) {
     const bh::PenroseSplitParameters split{
         input.split_radius_over_m, input.incoming_lz_over_m_m, input.split_angle_rad};
     const bh::PenroseEventResult result = bh::evaluate_equatorial_penrose_event(scenario, split);
-    print_penrose_event_result(scenario, result);
+    print_penrose_event_result(scenario, result, verbose);
 }
 
-void run_interactive_penrose_search(InteractiveSession& session) {
+void run_interactive_penrose_search(InteractiveSession& session,
+                                    const CliOptions& options) {
     const double spin_length = bh::kerr_spin_length(
         normalized_kerr_mass, session.black_hole.dimensionless_spin);
     const double horizon = bh::kerr_outer_horizon(normalized_kerr_mass, spin_length);
@@ -895,9 +1272,12 @@ void run_interactive_penrose_search(InteractiveSession& session) {
                   << window.dimension_sizes[1] << " x "
                   << window.dimension_sizes[2] << " = "
                   << window.candidates << " nodes.\n";
-        const bh::PenroseDijkstraSearchResult result =
-            bh::find_penrose_dijkstra_path(request.scenario, request.search);
-        print_penrose_dijkstra_result(request, result);
+        TerminalProgress display;
+        const bh::PenroseDijkstraSearchResult result = bh::find_penrose_dijkstra_path(
+            request.scenario, request.search, {},
+            make_progress_observer(window.candidates, options, display));
+        display.finish();
+        print_penrose_dijkstra_result(request, result, options.verbose);
         record_penrose_search_result(
             session.penrose_fallback_campaign, request.scenario, result);
         print_penrose_fallback_campaign(session.penrose_fallback_campaign);
@@ -907,7 +1287,7 @@ void run_interactive_penrose_search(InteractiveSession& session) {
     }
 }
 
-void run_interactive_toy_plasma(InteractiveSession& session) {
+void run_interactive_toy_plasma(InteractiveSession& session, const bool verbose) {
     std::cout << "\nReduced toy-plasma transport input\n"
               << "  This model uses the shared black-hole spin. Its reduced formula does not use mass.\n";
     ToyPlasmaState& input = session.toy_plasma;
@@ -919,10 +1299,11 @@ void run_interactive_toy_plasma(InteractiveSession& session) {
     input.duration_seconds = prompt_double("Duration [seconds]", input.duration_seconds);
     print_toy_plasma_result(bh::estimate_toy_plasma_transport(
         {input.magnetic_field_tesla, input.mass_density_kg_m3, input.flow_area_m2,
-         session.black_hole.dimensionless_spin, input.duration_seconds}));
+         session.black_hole.dimensionless_spin, input.duration_seconds}),
+         verbose);
 }
 
-void run_interactive() {
+void run_interactive(const CliOptions& options) {
     InteractiveSession session;
     std::cout << "Unified interactive simulation session\n"
               << "  Configure the black hole once. Every engine reuses that in-memory state.\n"
@@ -949,19 +1330,19 @@ void run_interactive() {
                 configure_shared_trajectory_control(session);
                 break;
             case 3:
-                run_interactive_algebraic(session);
+                run_interactive_algebraic(session, options.verbose);
                 break;
             case 4:
                 run_interactive_kerr(session);
                 break;
             case 5:
-                run_interactive_penrose(session);
+                run_interactive_penrose(session, options.verbose);
                 break;
             case 6:
-                run_interactive_penrose_search(session);
+                run_interactive_penrose_search(session, options);
                 break;
             case 7:
-                run_interactive_toy_plasma(session);
+                run_interactive_toy_plasma(session, options.verbose);
                 break;
             case 8:
                 return;
@@ -977,50 +1358,50 @@ void run_interactive() {
 int main(const int argc, char* argv[]) {
     std::cout << std::scientific << std::setprecision(6);
     try {
-        if (argc == 1) {
-            run_interactive();
-            return 0;
-        }
-        if (argc == 2 && (std::string_view(argv[1]) == "--help" ||
-                          std::string_view(argv[1]) == "-h")) {
-            print_usage(argv[0]);
-            return 0;
-        }
-        if (argc == 2 && std::string_view(argv[1]) == "--version") {
-            print_version();
-            return 0;
-        }
-        if (argc >= 2 && std::string_view(argv[1]) == "--algebraic") {
-            run_algebraic(argc, argv);
-            return 0;
-        }
-        if (argc >= 2 && std::string_view(argv[1]) == "--algebraic-range") {
-            run_algebraic_range(argc, argv);
-            return 0;
-        }
-        if (argc >= 2 && std::string_view(argv[1]) == "--toy-plasma") {
-            run_toy_plasma(argc, argv);
-            return 0;
-        }
-        if (argc == 2 && std::string_view(argv[1]) == "--interactive") {
-            run_interactive();
-            return 0;
-        }
-        if (argc >= 2 && std::string_view(argv[1]) == "--scenario") {
-            run_penrose_event(argc, argv);
-            return 0;
-        }
-        if (argc >= 2 && std::string_view(argv[1]) == "--search-penrose") {
-            run_penrose_dijkstra(argc, argv);
-            return 0;
-        }
-        if (argc >= 2 && std::string_view(argv[1]) == "--map-penrose") {
-            run_penrose_phase_map(argc, argv);
-            return 0;
-        }
+        const ParsedCli cli = parse_cli(argc, argv);
+        const std::span<const std::string_view> arguments(cli.arguments);
 
-        print_usage(argv[0]);
-        return 2;
+        if (cli.command == "help") {
+            if (!arguments.empty()) {
+                throw std::invalid_argument("help does not accept positional arguments");
+            }
+            print_usage();
+        } else if (cli.command == "version") {
+            if (!arguments.empty()) {
+                throw std::invalid_argument("version does not accept positional arguments");
+            }
+            if (cli.options.format == OutputFormat::json) {
+                bh::cli_json::write_version(std::cout, BH_VERSION);
+            } else {
+                print_version();
+            }
+        } else if (cli.command == "interactive") {
+            if (!arguments.empty()) {
+                throw std::invalid_argument("interactive does not accept positional arguments");
+            }
+            if (cli.options.format == OutputFormat::json) {
+                throw std::invalid_argument(
+                    "interactive mode requires text output; use a non-interactive command for JSON");
+            }
+            run_interactive(cli.options);
+        } else if (cli.command == "algebraic") {
+            run_algebraic(arguments, cli.options);
+        } else if (cli.command == "algebraic-range") {
+            run_algebraic_range(arguments, cli.options);
+        } else if (cli.command == "toy-plasma") {
+            run_toy_plasma(arguments, cli.options);
+        } else if (cli.command == "scenario") {
+            run_penrose_event(arguments, cli.options);
+        } else if (cli.command == "search") {
+            run_penrose_dijkstra(arguments, cli.options);
+        } else if (cli.command == "map") {
+            run_penrose_phase_map(arguments, cli.options);
+        } else {
+            std::cerr << "Error: unknown command '" << cli.command << "'\n\n";
+            print_usage();
+            return 2;
+        }
+        return 0;
     } catch (const std::exception& error) {
         std::cerr << "Error: " << error.what() << '\n';
         return 1;

@@ -5,6 +5,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <stop_token>
@@ -116,6 +117,21 @@ struct PenroseDijkstraSearchDiagnostics {
     std::chrono::nanoseconds elapsed{};
 };
 
+// Optional, synchronous progress reporting for long bounded searches. Observers
+// receive aggregate diagnostics only and cannot alter graph traversal or physics;
+// callback exceptions are ignored.
+struct PenroseSearchProgress {
+    std::size_t nodes_evaluated{};
+    std::size_t candidates_in_domain{};
+    std::chrono::nanoseconds elapsed{};
+    std::optional<double> best_eta_penrose{};
+};
+
+struct PenroseSearchProgressObserver {
+    std::size_t report_every_nodes{250};
+    std::function<void(const PenroseSearchProgress&)> callback{};
+};
+
 struct PenroseDijkstraSearchResult {
     PenroseDijkstraSearchStatus status{PenroseDijkstraSearchStatus::no_solution_within_bounds};
     // True when either a target-reaching goal or a completed-search fallback
@@ -179,11 +195,11 @@ void require_complete_penrose_search_window(
 // in the grid, breaking extraction ties by minimum adjustment cost.
 [[nodiscard]] PenroseDijkstraSearchResult find_penrose_dijkstra_path(
     const EquatorialPenroseScenario& scenario, const PenroseDijkstraSearchConfig& config,
-    std::stop_token stop_token = {});
+    std::stop_token stop_token = {}, PenroseSearchProgressObserver progress = {});
 
 // Evaluates every candidate in deterministic key order. It is a phase-space
 // diagnostic and a bounded maximum-within-grid check, not a graph path search.
 [[nodiscard]] PenrosePhaseMapResult evaluate_penrose_phase_map(
     const EquatorialPenroseScenario& scenario, const PenroseDijkstraSearchConfig& config,
-    std::stop_token stop_token = {});
+    std::stop_token stop_token = {}, PenroseSearchProgressObserver progress = {});
 }

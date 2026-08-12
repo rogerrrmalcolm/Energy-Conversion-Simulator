@@ -114,10 +114,10 @@ jobs:
       - name: Smoke-test container
         run: |
           docker run --rm black-hole-simulator:ci \
-            --map-penrose \
+            map \
             /opt/black-hole/share/black_hole_energy_simulation/scenarios/equatorial_penrose_avx2_smoke.cfg \
-            | tee /tmp/phase-map.txt
-          grep -Eq 'AVX2 four-lane batches:[[:space:]]+[1-9]' /tmp/phase-map.txt
+            --format json --no-progress > /tmp/phase-map.json
+          python3 scripts/validate_phase_map_json.py /tmp/phase-map.json
 
   publish-container:
     name: Publish Docker image
@@ -175,10 +175,10 @@ jobs:
           tag="$(printf '%s\n' "$IMAGE_TAGS" | head -n 1)"
           image="${tag%:*}"
           docker run --rm "$image@$IMAGE_DIGEST" \
-            --map-penrose \
+            map \
             /opt/black-hole/share/black_hole_energy_simulation/scenarios/equatorial_penrose_avx2_smoke.cfg \
-            | tee /tmp/published-phase-map.txt
-          grep -Eq 'AVX2 four-lane batches:[[:space:]]+[1-9]' /tmp/published-phase-map.txt
+            --format json --no-progress > /tmp/published-phase-map.json
+          python3 scripts/validate_phase_map_json.py /tmp/published-phase-map.json
 
   release-windows:
     name: Publish Windows release
