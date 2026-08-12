@@ -399,8 +399,12 @@ For implementation details, see
 
 ## CLI
 
-Running `black-hole-sim` without arguments opens the guided interactive
-session. Scripted runs use short subcommands:
+Running `black-hole-sim` without arguments follows one guided sequence:
+black-hole inputs, Kerr controls, algebraic reservoir, particle inputs,
+candidate graph, Dijkstra evaluation, and the selected Penrose event. Candidate
+grid values are configured first; each evaluated node then runs Penrose and its
+Kerr path checks. The resulting search or phase map is therefore an output, not
+an input to the physics evaluator. Scripted runs use short subcommands:
 
 ```powershell
 black-hole-sim algebraic 1.98847e31 0.9
@@ -414,8 +418,10 @@ for geometry, integration, conservation, and search-trace diagnostics. Add
 `--format json` for a versioned machine-readable result. JSON excludes full
 trajectory point arrays but retains outcomes, residuals, timings, backend
 details, and selected parameters. Long searches report progress only on an
-interactive terminal; `--progress` and `--no-progress` override that
-behavior. Legacy flag commands remain aliases for existing scripts.
+interactive terminal; `--progress` and `--no-progress` override that behavior.
+Progress uses stderr, so `map --format json --progress` keeps stdout as valid
+JSON while still showing the percentage in the terminal. Legacy flag commands
+remain aliases for existing scripts.
 
 ## Build And Verify
 
@@ -425,7 +431,7 @@ cmake --build build-cli
 ctest --test-dir build-cli --output-on-failure
 cmake --install build-cli --prefix .dist/black-hole-sim
 
-# A bare launch opens the interactive engine.
+# A bare launch opens the sequential guided pipeline.
 .\.dist\black-hole-sim\bin\black-hole-sim.exe
 .\.dist\black-hole-sim\bin\black-hole-sim.exe --help
 .\.dist\black-hole-sim\bin\black-hole-sim.exe search .\scenarios\equatorial_penrose_dijkstra_15_percent.cfg
@@ -453,7 +459,7 @@ the versioned JSON result and requires a nonzero `avx2_four_lane_batches`
 value. The scalar executable is used only as an unpublished correctness oracle
 in the backend comparison job.
 
-The 25-test AVX2 suite and 23-test scalar suite cover algebraic limits and
+The 22-test AVX2 suite and 20-test scalar suite cover algebraic limits and
 uncertainty, radial potentials, integration events and residuals, Penrose
 conservation and capture/escape, deterministic search behavior, the 25,000-node
 contract, fallback aggregation, concise and verbose output, JSON automation,

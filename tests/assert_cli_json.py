@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -12,6 +13,7 @@ def main() -> int:
     parser.add_argument("--expected-command", required=True)
     parser.add_argument("--expected-status")
     parser.add_argument("--require-avx2", action="store_true")
+    parser.add_argument("--require-progress", action="store_true")
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     options = parser.parse_args()
 
@@ -19,12 +21,21 @@ def main() -> int:
     if arguments and arguments[0] == "--":
         arguments = arguments[1:]
     completed = subprocess.run(
-        [str(options.executable), *arguments, "--format", "json", "--no-progress"],
+        [
+            str(options.executable),
+            *arguments,
+            "--format",
+            "json",
+            "--progress" if options.require_progress else "--no-progress",
+        ],
         check=True,
         capture_output=True,
         text=True,
     )
-    if completed.stderr:
+    if options.require_progress:
+        if not re.search(r"Progress: \d+/\d+ \(100\.0%\)", completed.stderr):
+            raise ValueError(f"JSON command did not report final progress: {completed.stderr}")
+    elif completed.stderr:
         raise ValueError(f"JSON command unexpectedly wrote to stderr: {completed.stderr}")
 
     document = json.loads(completed.stdout)
