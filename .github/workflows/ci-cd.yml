@@ -80,8 +80,8 @@ jobs:
       - name: Compare correctness and benchmark
         run: >
           python3 scripts/compare_backends.py
-          --scalar build-scalar/black_hole_demo
-          --avx2 build-avx2/black_hole_demo
+          --scalar build-scalar/black-hole-sim
+          --avx2 build-avx2/black-hole-sim
           --scenario benchmarks/penrose_phase_map_100.cfg
           --repetitions 3
 
