@@ -357,7 +357,7 @@ void print_usage() {
               << "The toy-plasma command is a reduced, ideal-MHD-inspired transport scaling,"
                  " not an MHD or GRMHD simulation.\n"
               << "The interactive command collects inputs in physics order, then runs the"
-                 " bounded Dijkstra evaluation.\n";
+                  " bounded exhaustive phase map.\n";
 }
 
 void print_version() {
@@ -661,7 +661,8 @@ void print_penrose_dijkstra_result(const bh::EquatorialPenroseDijkstraInput& inp
 
 void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& input,
                                      const bh::PenrosePhaseMapResult& result,
-                                     const bool verbose) {
+                                     const bool verbose,
+                                     const bool include_physical_event = true) {
     const bh::PenroseDijkstraSearchConfig& search = input.search;
     const bh::PenroseDijkstraSearchDiagnostics& diagnostics = result.diagnostics;
     const std::string_view execution_backend =
@@ -776,8 +777,10 @@ void print_penrose_phase_map_result(const bh::EquatorialPenroseDijkstraInput& in
         print_new_parameter_window_guidance(search);
     }
 
-    std::cout << "\nPhysical best-event diagnostics\n";
-    print_penrose_event_result(input.scenario, result.best_event, true);
+    if (include_physical_event) {
+        std::cout << "\nPhysical best-event diagnostics\n";
+        print_penrose_event_result(input.scenario, result.best_event, true);
+    }
 }
 
 void run_algebraic(const std::span<const std::string_view> arguments,
@@ -924,10 +927,10 @@ struct PenroseEventState {
 };
 
 struct PenroseSearchState {
-    bh::PenroseSplitParameters start{1.09, 2.07, -2.0};
-    bh::PenroseSplitParameters lower_bound{1.09, 2.07, -2.0};
-    bh::PenroseSplitParameters upper_bound{1.10, 2.07, -2.0};
-    bh::PenroseSplitParameters step{0.01, 0.01, 0.01};
+    bh::PenroseSplitParameters start{1.095, 2.07, -2.0};
+    bh::PenroseSplitParameters lower_bound{1.05, 2.03, -2.12};
+    bh::PenroseSplitParameters upper_bound{1.941, 2.12, -1.88};
+    bh::PenroseSplitParameters step{0.009, 0.01, 0.01};
 };
 
 struct InteractiveSession {
@@ -1006,17 +1009,18 @@ void run_interactive_algebraic(const InteractiveSession& session, const bool ver
         verbose);
 }
 
-bh::EquatorialPenroseDijkstraInput prompt_interactive_search_input(
+bh::EquatorialPenroseDijkstraInput prompt_interactive_phase_map_input(
     InteractiveSession& session) {
     const double spin_length = bh::kerr_spin_length(
         normalized_kerr_mass, session.black_hole.dimensionless_spin);
     const double horizon = bh::kerr_outer_horizon(normalized_kerr_mass, spin_length);
     const double static_limit = bh::kerr_static_limit_radius(
         normalized_kerr_mass, spin_length, 1.57079632679489661923);
-    std::cout << "  Configure the bounded candidate graph used by Dijkstra.\n"
-              << "  Every evaluated node is passed to Penrose, which calls Kerr for the"
-                 " incoming, captured, and escaping paths.\n"
-              << "  Maximum graph size: " << bh::max_penrose_search_nodes << " nodes.\n"
+    std::cout << "  Configure the bounded parameter grid used by the exhaustive phase map.\n"
+              << "  Every candidate is passed to Penrose, which calls Kerr for the"
+                  " incoming, captured, and escaping paths.\n"
+              << "  Four adjacent angle candidates are batched when the backend supports it.\n"
+              << "  Maximum map size: " << bh::max_penrose_search_nodes << " nodes.\n"
               << "  Valid split-radius interval: " << horizon << " < r_split / M < "
               << static_limit << "\n";
 
@@ -1063,8 +1067,8 @@ void run_interactive(const CliOptions& options) {
     InteractiveSession session;
     std::cout << "Guided black-hole simulation pipeline\n"
               << "  Inputs are collected once in execution order.\n"
-              << "  Candidate parameters are configured before evaluation; a phase map or"
-                 " search result exists only after Penrose and Kerr evaluate those candidates.\n";
+              << "  Candidate parameters are configured before evaluation; the phase map"
+                 " exists only after Penrose and Kerr evaluate those candidates.\n";
 
     std::cout << "\nStage 1/7 - Black-hole inputs\n";
     configure_shared_black_hole(session);
@@ -1080,32 +1084,36 @@ void run_interactive(const CliOptions& options) {
               << "  Energies and particle masses use normalized geometrized units, not joules.\n";
     prompt_penrose_scenario_inputs(session);
 
-    std::cout << "\nStage 5/7 - Candidate parameter graph\n";
+    std::cout << "\nStage 5/7 - Candidate parameter grid\n";
     const bh::EquatorialPenroseDijkstraInput request =
-        prompt_interactive_search_input(session);
+        prompt_interactive_phase_map_input(session);
     const bh::PenroseSearchWindowSummary window =
         bh::describe_penrose_search_window(request.scenario, request.search);
     bh::require_complete_penrose_search_window(request.scenario, request.search);
-    std::cout << "\nAccepted search window: "
+    std::cout << "\nAccepted phase-map window: "
               << window.dimension_sizes[0] << " x "
               << window.dimension_sizes[1] << " x "
               << window.dimension_sizes[2] << " = "
               << window.candidates << " nodes.\n";
 
-    std::cout << "\nStage 6/7 - Dijkstra candidate evaluation\n";
+    std::cout << "\nStage 6/7 - Exhaustive phase-map evaluation\n";
     TerminalProgress display;
-    const bh::PenroseDijkstraSearchResult result = bh::find_penrose_dijkstra_path(
+    const bh::PenrosePhaseMapResult result = bh::evaluate_penrose_phase_map(
         request.scenario, request.search, {},
         make_progress_observer(window.candidates, options, display));
     display.finish();
-    print_penrose_dijkstra_result(request, result, options.verbose, false);
+    print_penrose_phase_map_result(request, result, options.verbose, false);
 
     std::cout << "\nStage 7/7 - Selected Penrose event\n";
-    if (!result.found) {
+    if (!result.complete) {
+        std::cout << "The phase map did not complete, so no bounded-grid result is shown.\n";
+        return;
+    }
+    if (!result.best_validated_candidate) {
         std::cout << "No validated candidate was selected, so there is no final event to show.\n";
         return;
     }
-    print_penrose_event_result(request.scenario, result.selected_event, options.verbose);
+    print_penrose_event_result(request.scenario, result.best_event, options.verbose);
 }
 }  // namespace
 

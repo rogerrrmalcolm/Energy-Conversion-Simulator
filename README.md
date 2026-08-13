@@ -401,10 +401,12 @@ For implementation details, see
 
 Running `black-hole-sim` without arguments follows one guided sequence:
 black-hole inputs, Kerr controls, algebraic reservoir, particle inputs,
-candidate graph, Dijkstra evaluation, and the selected Penrose event. Candidate
-grid values are configured first; each evaluated node then runs Penrose and its
-Kerr path checks. The resulting search or phase map is therefore an output, not
-an input to the physics evaluator. Scripted runs use short subcommands:
+candidate grid, exhaustive phase-map evaluation, and the selected Penrose event.
+The guided defaults define the production 25,000-state grid and dispatch eligible
+four-candidate batches through AVX2 builds. Each candidate then runs Penrose and
+its Kerr path checks. The phase map is therefore an output, not an input to the
+physics evaluator. Dijkstra remains available through `search`; scripted runs use
+short subcommands:
 
 ```powershell
 black-hole-sim algebraic 1.98847e31 0.9

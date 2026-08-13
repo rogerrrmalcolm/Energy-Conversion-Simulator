@@ -10,6 +10,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Validate the guided CLI pipeline")
     parser.add_argument("--executable", required=True)
     parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--require-avx2", action="store_true")
     arguments = parser.parse_args()
 
     completed = subprocess.run(
@@ -31,9 +32,9 @@ def main() -> int:
         "Stage 2/7 - Kerr integration controls",
         "Stage 3/7 - Algebraic Kerr reservoir",
         "Stage 4/7 - Particle and event inputs",
-        "Stage 5/7 - Candidate parameter graph",
-        "Stage 6/7 - Dijkstra candidate evaluation",
-        "Dijkstra Penrose search",
+        "Stage 5/7 - Candidate parameter grid",
+        "Stage 6/7 - Exhaustive phase-map evaluation",
+        "Bounded Penrose phase-space map",
         "Stage 7/7 - Selected Penrose event",
         "Idealized equatorial Penrose event",
     ]
@@ -46,7 +47,11 @@ def main() -> int:
 
     if "Choose an action" in completed.stdout:
         raise AssertionError("the legacy free-order action menu is still present")
-    if not re.search(r"Progress: 2/2 \(100\.0%\)", completed.stderr):
+    if "Dijkstra Penrose search" in completed.stdout:
+        raise AssertionError("the guided pipeline still uses scalar Dijkstra evaluation")
+    if arguments.require_avx2 and "completed / avx2-four-lane-single-thread" not in completed.stdout:
+        raise AssertionError("guided phase map did not dispatch its four-state batch through AVX2")
+    if not re.search(r"Progress: 4/4 \(100\.0%\)", completed.stderr):
         raise AssertionError(f"missing final percentage progress update:\n{completed.stderr}")
 
     print("Validated sequential input stages and percentage progress")

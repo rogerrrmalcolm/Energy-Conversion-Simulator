@@ -75,10 +75,15 @@ if(BH_BUILD_TESTS)
     set_tests_properties(cli_version PROPERTIES
         PASS_REGULAR_EXPRESSION "black-hole-sim ${PROJECT_VERSION}")
 
-    add_test(NAME cli_sequential_interactive COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_interactive_pipeline.py"
+    set(BH_INTERACTIVE_TEST_ARGUMENTS
         --executable $<TARGET_FILE:black_hole_demo>
         --input "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/interactive_pipeline.txt")
+    if(BH_ENABLE_AVX2)
+        list(APPEND BH_INTERACTIVE_TEST_ARGUMENTS --require-avx2)
+    endif()
+    add_test(NAME cli_sequential_interactive COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_interactive_pipeline.py"
+        ${BH_INTERACTIVE_TEST_ARGUMENTS})
 
     add_test(NAME cli_algebraic COMMAND black_hole_demo algebraic 1.98847e31 0.9)
     set_tests_properties(cli_algebraic PROPERTIES
