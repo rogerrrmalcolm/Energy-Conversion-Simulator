@@ -11,14 +11,7 @@ has been extracted from an observed black hole or can be delivered to Earth.
 
 ## Model Pipeline
 
-```mermaid
-flowchart LR
-    A["Algebraic Kerr model"] --> K["Kerr geometry and geodesics"]
-    K --> P["Penrose split evaluator"]
-    P --> D["Dijkstra or exhaustive phase map"]
-    D --> R["Validated goal or bounded fallback"]
-    T["Reduced toy-plasma model"] -. "separate educational estimate" .-> R
-```
+![Sequential model pipeline](docs/assets/model-pipeline.svg)
 
 ### 1. Algebraic Kerr Energy Model
 
@@ -218,17 +211,7 @@ h = 0
 f = g + h = g
 ```
 
-```mermaid
-flowchart TD
-    S["Start node<br/>(r, Lz, angle), g=0"] --> Q["Priority queue<br/>lowest g first"]
-    Q --> P["Pop next node"]
-    P --> E["Run Kerr + Penrose evaluator"]
-    E -->|"All checks pass and eta >= 15%"| G["found_goal<br/>minimum-change parameters"]
-    E -->|"Not a goal"| N["Generate up to 6 neighbors<br/>r +/- step, Lz +/- step, angle +/- step"]
-    N --> Q
-    Q -->|"Queue empty"| F["Best validated fallback<br/>in this complete window"]
-    F --> C["Compare with overall fallback<br/>from completed windows"]
-```
+![Dijkstra parameter-search pipeline](docs/assets/dijkstra-search-pipeline.svg)
 
 `std::priority_queue` selects the lowest `g`; ordered maps store best costs,
 parents, discovery order, and compact evaluations. Stable key and discovery

@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="680" viewBox="0 0 1100 680" role="img" aria-labelledby="title description">
+  <title id="title">Dijkstra parameter-search pipeline</title>
+  <desc id="description">Dijkstra search starts from one parameter tuple, pops the lowest-cost node, evaluates Kerr and Penrose physics, returns a minimum-change goal when all checks pass at fifteen percent efficiency, or generates neighbors until the queue is empty and reports the best validated fallback.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#475569"/>
+    </marker>
+    <style>
+      .heading { font: 700 24px "Segoe UI", Arial, sans-serif; fill: #0f172a; }
+      .subheading { font: 400 15px "Segoe UI", Arial, sans-serif; fill: #475569; }
+      .label { font: 700 16px "Segoe UI", Arial, sans-serif; fill: #0f172a; }
+      .detail { font: 400 14px "Segoe UI", Arial, sans-serif; fill: #475569; }
+      .edge { font: 600 13px "Segoe UI", Arial, sans-serif; fill: #334155; }
+      .goal { font: 700 14px "Segoe UI", Arial, sans-serif; fill: #166534; }
+      .fallback { font: 700 14px "Segoe UI", Arial, sans-serif; fill: #9a3412; }
+    </style>
+  </defs>
+
+  <rect width="1100" height="680" fill="#ffffff"/>
+  <text x="40" y="46" class="heading">Dijkstra parameter-search pipeline</text>
+  <text x="40" y="72" class="subheading">Uniform edge cost means the first feasible goal uses the fewest parameter-step changes.</text>
+
+  <g stroke="#cbd5e1" stroke-width="2">
+    <rect x="40" y="120" width="190" height="94" rx="6" fill="#f8fafc"/>
+    <rect x="290" y="120" width="190" height="94" rx="6" fill="#f8fafc"/>
+    <rect x="540" y="120" width="190" height="94" rx="6" fill="#f8fafc"/>
+    <rect x="790" y="120" width="250" height="94" rx="6" fill="#eff6ff" stroke="#93c5fd"/>
+    <rect x="790" y="310" width="250" height="104" rx="6" fill="#f0fdf4" stroke="#86efac"/>
+    <rect x="500" y="310" width="230" height="104" rx="6" fill="#fff7ed" stroke="#fdba74"/>
+    <rect x="290" y="510" width="230" height="104" rx="6" fill="#fff7ed" stroke="#fdba74"/>
+    <rect x="600" y="510" width="250" height="104" rx="6" fill="#f8fafc"/>
+  </g>
+
+  <g text-anchor="middle">
+    <text x="135" y="153" class="label">Start node</text>
+    <text x="135" y="177" class="detail">(r, Lz, angle)</text>
+    <text x="135" y="198" class="detail">g = 0</text>
+
+    <text x="385" y="153" class="label">Priority queue</text>
+    <text x="385" y="177" class="detail">lowest g first</text>
+
+    <text x="635" y="153" class="label">Pop next node</text>
+    <text x="635" y="177" class="detail">deterministic tie order</text>
+
+    <text x="915" y="153" class="label">Kerr + Penrose</text>
+    <text x="915" y="177" class="detail">evaluate physics and</text>
+    <text x="915" y="198" class="detail">constraint residuals</text>
+
+    <text x="915" y="344" class="label">found_goal</text>
+    <text x="915" y="368" class="detail">all checks pass and</text>
+    <text x="915" y="389" class="goal">eta_penrose &gt;= 15%</text>
+
+    <text x="615" y="344" class="label">Generate neighbors</text>
+    <text x="615" y="368" class="detail">up to 6 one-step changes</text>
+    <text x="615" y="389" class="detail">in r, Lz, or angle</text>
+
+    <text x="405" y="544" class="label">Validated fallback</text>
+    <text x="405" y="568" class="detail">best result after this</text>
+    <text x="405" y="589" class="fallback">bounded window is exhausted</text>
+
+    <text x="725" y="544" class="label">Compare fallbacks</text>
+    <text x="725" y="568" class="detail">retain the best validated</text>
+    <text x="725" y="589" class="detail">result across completed windows</text>
+  </g>
+
+  <g fill="none" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)">
+    <path d="M230 167 H282"/>
+    <path d="M480 167 H532"/>
+    <path d="M730 167 H782"/>
+    <path d="M915 214 V302"/>
+    <path d="M790 188 H760 V362 H738"/>
+    <path d="M500 362 H385 V222"/>
+    <path d="M385 214 V502"/>
+    <path d="M520 562 H592"/>
+  </g>
+
+  <rect x="869" y="246" width="92" height="24" rx="4" fill="#ffffff"/>
+  <text x="915" y="263" text-anchor="middle" class="edge">goal feasible</text>
+  <rect x="731" y="274" width="94" height="24" rx="4" fill="#ffffff"/>
+  <text x="778" y="291" text-anchor="middle" class="edge">not a goal</text>
+  <rect x="331" y="432" width="108" height="24" rx="4" fill="#ffffff"/>
+  <text x="385" y="449" text-anchor="middle" class="edge">queue empty</text>
+</svg>
