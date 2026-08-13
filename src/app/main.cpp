@@ -1106,7 +1106,7 @@ void run_interactive(const CliOptions& options) {
               << window.dimension_sizes[2] << " = "
               << window.candidates << " nodes.\n";
 
-    std::cout << "\nStage 6/7 - Exhaustive phase-map evaluation\n";
+    std::cout << "\nStage 6/7 - Exhaustive phase-map evaluation\n" << std::flush;
     TerminalProgress display;
     const bh::PenrosePhaseMapResult result = bh::evaluate_penrose_phase_map(
         request.scenario, request.search, {},
