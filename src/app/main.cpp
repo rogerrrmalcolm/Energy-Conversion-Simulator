@@ -187,11 +187,21 @@ public:
         const double seconds = std::chrono::duration<double>(progress.elapsed).count();
         const double nodes_per_second =
             seconds > 0.0 ? static_cast<double>(progress.nodes_evaluated) / seconds : 0.0;
+        constexpr std::size_t progress_bar_width = 24;
+        const std::size_t completed_bar_cells = progress.candidates_in_domain == 0
+                                                    ? 0
+                                                    : std::min(
+                                                          progress_bar_width,
+                                                          progress.nodes_evaluated *
+                                                              progress_bar_width /
+                                                              progress.candidates_in_domain);
 
         std::ostringstream line;
         line << "Progress: " << progress.nodes_evaluated << "/"
              << progress.candidates_in_domain << " (" << std::fixed << std::setprecision(1)
-             << percent << "%) | " << std::setprecision(2) << nodes_per_second << " nodes/s"
+             << percent << "%) [" << std::string(completed_bar_cells, '#')
+             << std::string(progress_bar_width - completed_bar_cells, '-') << "] | "
+             << std::setprecision(2) << nodes_per_second << " nodes/s"
              << " | best ";
         if (progress.best_eta_penrose) {
             line << std::setprecision(4) << 100.0 * *progress.best_eta_penrose << "%";

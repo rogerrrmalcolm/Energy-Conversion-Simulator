@@ -33,7 +33,7 @@ def main() -> int:
         text=True,
     )
     if options.require_progress:
-        if not re.search(r"Progress: \d+/\d+ \(100\.0%\)", completed.stderr):
+        if not re.search(r"Progress: \d+/\d+ \(100\.0%\) \[#{24}\]", completed.stderr):
             raise ValueError(f"JSON command did not report final progress: {completed.stderr}")
     elif completed.stderr:
         raise ValueError(f"JSON command unexpectedly wrote to stderr: {completed.stderr}")

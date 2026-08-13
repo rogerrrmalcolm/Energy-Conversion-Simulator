@@ -51,7 +51,7 @@ def main() -> int:
         raise AssertionError("the guided pipeline still uses scalar Dijkstra evaluation")
     if arguments.require_avx2 and "completed / avx2-four-lane-single-thread" not in completed.stdout:
         raise AssertionError("guided phase map did not dispatch its four-state batch through AVX2")
-    if not re.search(r"Progress: 4/4 \(100\.0%\)", completed.stderr):
+    if not re.search(r"Progress: 4/4 \(100\.0%\) \[#{24}\]", completed.stderr):
         raise AssertionError(f"missing final percentage progress update:\n{completed.stderr}")
 
     print("Validated sequential input stages and percentage progress")
