@@ -1,0 +1,32 @@
+name: Occasional documentation maintenance
+
+"on":
+  schedule:
+    - cron: '19 17 * * 3'
+      timezone: America/Toronto
+    - cron: '37 13 * * 6'
+      timezone: America/Toronto
+    - cron: '53 16 * * 0'
+      timezone: America/Toronto
+  push:
+    paths:
+      - .github/workflows/small-maintenance.yml
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Run this repository's maintenance check outside its normal rotation
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: occasional-documentation-maintenance
+  queue: max
+
+jobs:
+  maintain:
+    uses: rogerrrmalcolm/Personal-Website/.github/workflows/automated-maintenance.yml@main
+    with:
+      force: ${{ inputs.force || false }}
